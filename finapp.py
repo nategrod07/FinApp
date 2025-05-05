@@ -36,30 +36,57 @@ def categorize_transactions(df):
                     
         return df
         
+def clean_dates(df):
+    """Fix problematic dates in the dataframe"""
+    # Make a copy of the original Date column before processing
+    df["Original_Date"] = df["Date"].copy()
+    
+    # Function to fix individual date entries
+    def fix_date(date_str):
+        try:
+            # Try to parse as is
+            return pd.to_datetime(date_str, errors='coerce')
+        except:
+            return pd.NaT
+    
+    # Apply the fix and handle specific edge cases
+    df["Date"] = df["Date"].apply(fix_date)
+    
+    # Handle specific known issues
+    mask_nov31 = df["Original_Date"].str.contains("31/11", na=False)
+    if mask_nov31.any():
+        fixed_dates = df.loc[mask_nov31, "Original_Date"].str.replace("31/11", "30/11")
+        df.loc[mask_nov31, "Date"] = pd.to_datetime(fixed_dates, dayfirst=True, errors='coerce')
+    
+    # Handle unusual month values
+    mask_month_13plus = df["Original_Date"].str.contains(r"\d+/(?:1[3-9]|2[0-9]|3[0-9])/", na=False)
+    if mask_month_13plus.any():
+        fixed_dates = df.loc[mask_month_13plus, "Original_Date"].str.replace(
+            r"(\d+)/(1[3-9]|2[0-9]|3[0-9])/", r"\1/12/", regex=True)
+        df.loc[mask_month_13plus, "Date"] = pd.to_datetime(fixed_dates, dayfirst=True, errors='coerce')
+    
+    # Create formatted date string
+    df["Date_formatted"] = df["Date"].dt.strftime("%m/%d/%Y")
+    
+    # Drop the temporary column
+    df.drop("Original_Date", axis=1, inplace=True)
+    
+    # Report how many dates were fixed or are still problematic
+    problem_count = df["Date"].isna().sum()
+    return df, problem_count
+
 def load_transactions(file): #function that defines transactions
     try:
         df = pd.read_csv(file)  #loading in the file to be read
         df.columns = [col.strip() for col in df.columns] #remove white spaces for columns
         df["AmountCharged"] = df["AmountCharged"].str.replace (",", "").astype(float) #replacing , with " " and converting to float
-        # Try to parse dates with flexible format detection and error handling
-        try:
-            # First attempt with dayfirst=True for most common format
-            df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors='coerce')
-            
-            # Check for any NaT (Not a Time) values from parsing errors
-            if df["Date"].isna().any():
-                st.warning(f"Some dates couldn't be parsed. Rows with invalid dates will be highlighted.")
-            
-            # Create formatted date string column
-            df["Date_formatted"] = df["Date"].dt.strftime("%m/%d/%Y")
-            
-            # For debugging - show problematic rows
-            problem_rows = df[df["Date"].isna()]
-            if not problem_rows.empty:
-                st.error(f"Warning: {len(problem_rows)} rows have invalid dates.")
-        except Exception as e:
-            st.error(f"Error processing dates: {str(e)}")
-            return None
+        
+        # Clean dates with our new function
+        df, problem_count = clean_dates(df)
+        if problem_count > 0:
+            st.warning(f"{problem_count} dates couldn't be fixed and were set to NaT. These rows will be excluded from analysis.")
+            df = df.dropna(subset=["Date"])
+        
         return categorize_transactions(df) #df = dataframe
     except Exception as e:
         st.error(f"error proccessing file: {str(e)}")
