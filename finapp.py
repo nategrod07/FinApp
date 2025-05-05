@@ -41,9 +41,25 @@ def load_transactions(file): #function that defines transactions
         df = pd.read_csv(file)  #loading in the file to be read
         df.columns = [col.strip() for col in df.columns] #remove white spaces for columns
         df["AmountCharged"] = df["AmountCharged"].str.replace (",", "").astype(float) #replacing , with " " and converting to float
-        df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y")
-           #d = day, m = month, Y = year
-        df["Date_formatted"] = df["Date"].dt.strftime("%m/%d/%Y")
+        # Try to parse dates with flexible format detection and error handling
+        try:
+            # First attempt with dayfirst=True for most common format
+            df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors='coerce')
+            
+            # Check for any NaT (Not a Time) values from parsing errors
+            if df["Date"].isna().any():
+                st.warning(f"Some dates couldn't be parsed. Rows with invalid dates will be highlighted.")
+            
+            # Create formatted date string column
+            df["Date_formatted"] = df["Date"].dt.strftime("%m/%d/%Y")
+            
+            # For debugging - show problematic rows
+            problem_rows = df[df["Date"].isna()]
+            if not problem_rows.empty:
+                st.error(f"Warning: {len(problem_rows)} rows have invalid dates.")
+        except Exception as e:
+            st.error(f"Error processing dates: {str(e)}")
+            return None
         return categorize_transactions(df) #df = dataframe
     except Exception as e:
         st.error(f"error proccessing file: {str(e)}")
