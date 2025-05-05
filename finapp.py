@@ -71,7 +71,8 @@ def main(): #main function
             
             st.session_state.debits_df = debits_df.copy()
             
-            tab1,tab2 = st.tabs(["Expenses (Debits)", "Payments (Credits)"])
+            tab1, tab2 = st.tabs(["Expenses (Debits)", "Payments (Credits)"])
+            
             with tab1:
                 new_category = st.text_input("New category Name")
                 add_button = st.button("Add Category")
@@ -93,11 +94,10 @@ def main(): #main function
                              options=list(st.session_state.categories.keys())
                         )
                     },
-    hide_index=True,
-    use_container_width=True,
-    key="category_editor"
-)
-
+                    hide_index=True,
+                    use_container_width=True,
+                    key="category_editor"
+                )
                 
                 save_button = st.button("Apply Changes", type= "primary")
                 if save_button:
@@ -110,29 +110,30 @@ def main(): #main function
                         st.session_state.debits_df.at[idx, "Category"] = new_category
                         add_keyword_to_category(new_category, details)
 
-            st.subheader('Expense Summary')
-            category_totals = st.session_state.debits_df.groupby("Category")["AmountCharged"].sum().reset_index()
-            category_totals = category_totals.sort_values("AmountCharged", ascending=False)
-                
-            st.dataframe(
-                        category_totals,
-                        column_config={
+                st.subheader('Expense Summary')
+                category_totals = st.session_state.debits_df.groupby("Category")["AmountCharged"].sum().reset_index()
+                category_totals = category_totals.sort_values("AmountCharged", ascending=False)
+                    
+                st.dataframe(
+                    category_totals,
+                    column_config={
                         "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD")
                     },
                     use_container_width=True,
                     hide_index=True
-                    )
-            fig = px.pie(
-                        category_totals,
-                        values="AmountCharged",
-                        names="Category", 
-                        title="Expenses by Category"
-                    )
-            st.plotly_chart(fig, use_container_width=True)
-        with tab2:
-            st.subheader("Payment Summary")
-            total_payments = credits_df["AmountCharged"].sum()
-            st.metric("Total payments", f"{total_payments:,.2f} USD")
-            st.write(credits_df)
+                )
+                fig = px.pie(
+                    category_totals,
+                    values="AmountCharged",
+                    names="Category", 
+                    title="Expenses by Category"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab2:
+                st.subheader("Payment Summary")
+                total_payments = credits_df["AmountCharged"].sum()
+                st.metric("Total payments", f"{total_payments:,.2f} USD")
+                st.write(credits_df)
                 
 main()
