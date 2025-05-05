@@ -41,8 +41,9 @@ def load_transactions(file): #function that defines transactions
         df = pd.read_csv(file)  #loading in the file to be read
         df.columns = [col.strip() for col in df.columns] #remove white spaces for columns
         df["AmountCharged"] = df["AmountCharged"].str.replace (",", "").astype(float) #replacing , with " " and converting to float
-        df["Date"] = pd.to_datetime(df["Date"], format = "%b %d %Y")
+        df["Date"] = pd.to_datetime(df["Date"], format = "%d-%b-%Y")
            #d = day d = month y = year
+        df["Date_formatted"] = df["Date"].dt.strftime("%m/%d/%Y")
         return categorize_transactions(df) #df = dataframe
     except Exception as e:
         st.error(f"error proccessing file: {str(e)}")
