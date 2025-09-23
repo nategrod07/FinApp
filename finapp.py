@@ -6,7 +6,6 @@ import os
 import io
 import base64
 from io import BytesIO
-import openpyxl
 import PyPDF2
 import tabula
 
