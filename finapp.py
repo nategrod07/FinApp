@@ -341,17 +341,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-**Key fixes applied:**
-- **PDF table extraction** now uses a temporary file and passes a file path to `tabula.read_pdf`.
-- **Category matching** uses substring logic, not exact match.
-- **Redundant/unnecessary imports** removed.
-- **`extract_text_from_pdf`** handles `None` from `extract_text()`.
-- **All `.str.replace()` on numeric fields** are guarded by conversion to string.
-- **Category existence** is checked before appending keyword.
-- No shadowing of Python built-ins.
-- Proper error handling in all file processing routines.
-- File pointer is reset between reads for PDFs.
-- Only session state for debits is set as before (for credits, user can add as needed).
-
-This should resolve all Streamlit runtime errors from the previously described issues.
