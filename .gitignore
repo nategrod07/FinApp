@@ -1,6 +1,11 @@
 bank_statement_sample3 - Sheet1.csv
 clean_dates.py
-bank_statement_sample3 - Sheet1.csv
-clean_dates.py
-bank_statement_sample3 - Sheet1.csv
-clean_dates.py
+
+# Streamlit secrets (contains API keys, never commit)
+.streamlit/secrets.toml
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc

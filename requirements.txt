@@ -1,2 +1,6 @@
-plotly
 streamlit
+pandas
+plotly
+PyPDF2
+openpyxl
+anthropic

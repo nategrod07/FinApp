@@ -4,18 +4,53 @@ import pandas as pd
 import plotly.express as px
 import json
 import os
-# import io, base64, BytesIO -- Unused, removed
-from io import BytesIO
+import time
+import threading
 
-# PDF support imports
 try:
     import PyPDF2
-    import tabula
-    PDF_SUPPORT = True
+    PYPDF2_AVAILABLE = True
 except ImportError:
-    PDF_SUPPORT = False
+    PYPDF2_AVAILABLE = False
+
+try:
+    import anthropic
+    ANTHROPIC_SDK_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_SDK_AVAILABLE = False
 
 st.set_page_config(page_title="FinApp", page_icon="$$", layout="wide")
+
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+MAX_PDF_CHARS = 15000
+MAX_AI_CATEGORIZE_ITEMS = 200
+
+# AI calls cost real money, so both caps apply: a global cap shared by everyone
+# hitting this deployment, and a tighter per-browser-session cap.
+AI_GLOBAL_RATE_LIMIT = 20
+AI_GLOBAL_RATE_WINDOW_SECONDS = 3600
+AI_SESSION_RATE_LIMIT = 5
+AI_SESSION_RATE_WINDOW_SECONDS = 3600
+
+REQUIRED_COLUMNS = ["Date", "Details", "AmountCharged", "Debit/Credit"]
+
+COLUMN_ALIASES = {
+    "Transaction Date": "Date",
+    "TransactionDate": "Date",
+    "Date of Transaction": "Date",
+    "Tx Date": "Date",
+    "Posting Date": "Date",
+    "Description": "Details",
+    "Merchant": "Details",
+    "Transaction": "Details",
+    "Payee": "Details",
+    "Memo": "Details",
+    "Amount": "AmountCharged",
+    "Value": "AmountCharged",
+    "Transaction Amount": "AmountCharged",
+    "Type": "Debit/Credit",
+    "Transaction Type": "Debit/Credit",
+}
 
 # Session state setup
 category_file = "categories.json"
@@ -23,14 +58,241 @@ if "categories" not in st.session_state:
     st.session_state.categories = {
         "Uncategorized": [],
     }
+if "column_ai_mappings" not in st.session_state:
+    st.session_state.column_ai_mappings = {}
 
 if os.path.exists(category_file):
     with open(category_file, "r") as f:
         st.session_state.categories = json.load(f)
 
+
 def save_categories():
     with open(category_file, "w") as f:
         json.dump(st.session_state.categories, f)
+
+
+# --- Secrets & access control -------------------------------------------
+
+def get_secret(key):
+    """Read a secret from st.secrets (Streamlit Cloud) or an env var (local/other hosts).
+
+    Never hardcode secrets in source -- this is the only place that should touch
+    ANTHROPIC_API_KEY or APP_PASSWORD, so a leak can only come from misconfigured
+    hosting, not from this code.
+    """
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key)
+
+
+def check_app_password():
+    """Optional gate: if APP_PASSWORD is set in secrets, require it before showing the app.
+
+    Off by default (no secret configured = no prompt), so local/solo use is unaffected.
+    This exists to stop random visitors to a public deployment URL from burning your
+    AI budget or viewing your uploaded financial data.
+    """
+    required = get_secret("APP_PASSWORD")
+    if not required:
+        return True
+    if st.session_state.get("app_authed"):
+        return True
+    st.title("FinApp")
+    pw = st.text_input("Enter app password", type="password")
+    if pw:
+        if pw == required:
+            st.session_state.app_authed = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+    return False
+
+
+# --- AI helpers -------------------------------------------------------
+
+@st.cache_resource
+def get_claude_client():
+    if not ANTHROPIC_SDK_AVAILABLE:
+        return None
+    api_key = get_secret("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    return anthropic.Anthropic(api_key=api_key)
+
+
+def ai_available():
+    return get_claude_client() is not None
+
+
+@st.cache_resource
+def _global_rate_limiter_state():
+    return {"lock": threading.Lock(), "call_times": []}
+
+
+def _prune_old(timestamps, window_seconds):
+    cutoff = time.time() - window_seconds
+    return [t for t in timestamps if t > cutoff]
+
+
+def check_and_record_ai_call():
+    """Enforce a global cap (shared across everyone on this deployment) plus a
+    tighter per-session cap, so one browser session can't exhaust the shared budget.
+    Returns (allowed, message_if_blocked).
+    """
+    now = time.time()
+    state = _global_rate_limiter_state()
+    with state["lock"]:
+        state["call_times"] = _prune_old(state["call_times"], AI_GLOBAL_RATE_WINDOW_SECONDS)
+        if len(state["call_times"]) >= AI_GLOBAL_RATE_LIMIT:
+            return False, f"AI usage limit reached ({AI_GLOBAL_RATE_LIMIT} requests/hour for this app). Try again later."
+        if "ai_call_times" not in st.session_state:
+            st.session_state.ai_call_times = []
+        st.session_state.ai_call_times = _prune_old(st.session_state.ai_call_times, AI_SESSION_RATE_WINDOW_SECONDS)
+        if len(st.session_state.ai_call_times) >= AI_SESSION_RATE_LIMIT:
+            return False, f"You've hit the per-session AI limit ({AI_SESSION_RATE_LIMIT} requests/hour). Try again later."
+        state["call_times"].append(now)
+        st.session_state.ai_call_times.append(now)
+        return True, None
+
+
+def call_claude(system_prompt, user_prompt, max_tokens=2048):
+    client = get_claude_client()
+    if client is None:
+        return None
+    allowed, block_reason = check_and_record_ai_call()
+    if not allowed:
+        st.error(block_reason)
+        return None
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        return response.content[0].text
+    except Exception as e:
+        st.error(f"AI request failed: {str(e)}")
+        return None
+
+
+def extract_json_from_response(text):
+    text = text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.startswith("json"):
+                text = text[4:]
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def ai_extract_transactions_from_text(raw_text):
+    """Use Claude to turn raw PDF statement text into structured transactions."""
+    truncated = raw_text[:MAX_PDF_CHARS]
+    system_prompt = (
+        "You extract bank/credit card transactions from raw statement text and output "
+        "ONLY a JSON array, no markdown fences, no commentary. Each element must have keys: "
+        '"date" (as written in the source), "details" (merchant/description), '
+        '"amount" (positive number, no currency symbols or commas), '
+        '"type" (exactly "Debit" or "Credit"). Skip headers, totals, and non-transaction lines. '
+        "If you cannot find any transactions, output an empty array []."
+    )
+    response_text = call_claude(system_prompt, truncated, max_tokens=4096)
+    if not response_text:
+        return None
+    data = extract_json_from_response(response_text)
+    if not data:
+        return None
+    try:
+        df = pd.DataFrame(data)
+        df = df.rename(columns={
+            "date": "Date", "details": "Details",
+            "amount": "AmountCharged", "type": "Debit/Credit",
+        })
+        df["Status"] = "SETTLED"
+        return df
+    except Exception:
+        return None
+
+
+def ai_map_columns(columns, sample_rows_text):
+    """Ask Claude to map a file's actual headers onto the required schema."""
+    system_prompt = (
+        "You map spreadsheet column headers to a required schema. Respond ONLY with a JSON "
+        'object mapping each ORIGINAL header to one of "Date", "Details", "AmountCharged", '
+        '"Debit/Credit", or null if it does not correspond to any of them. '
+        "Use each target at most once. No markdown fences, no commentary."
+    )
+    user_prompt = f"Original headers: {columns}\n\nSample rows:\n{sample_rows_text}"
+    response_text = call_claude(system_prompt, user_prompt, max_tokens=1024)
+    if not response_text:
+        return None
+    mapping = extract_json_from_response(response_text)
+    if not isinstance(mapping, dict):
+        return None
+    return {k: v for k, v in mapping.items() if v}
+
+
+def ai_categorize_details(details_list, category_names):
+    """Ask Claude to assign each transaction detail to an existing category."""
+    system_prompt = (
+        "You categorize credit card transaction descriptions into spending categories. "
+        "Respond ONLY with a JSON object mapping each transaction description to exactly one "
+        f"category name from this list: {category_names}. "
+        'If nothing fits well, use "Uncategorized". No markdown fences, no commentary.'
+    )
+    user_prompt = "Transaction descriptions:\n" + "\n".join(f"- {d}" for d in details_list)
+    response_text = call_claude(system_prompt, user_prompt, max_tokens=4096)
+    if not response_text:
+        return None
+    mapping = extract_json_from_response(response_text)
+    if not isinstance(mapping, dict):
+        return None
+    return mapping
+
+
+# --- Parsing helpers ----------------------------------------------------
+
+def map_columns_with_aliases(df):
+    """Rename known alias headers onto the required schema; report what's still missing."""
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        mapping = {}
+        for alt, target in COLUMN_ALIASES.items():
+            if alt in df.columns and target in missing:
+                mapping[alt] = target
+        df = df.rename(columns=mapping)
+        missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    return df, missing
+
+
+def clean_amount_and_type_columns(df):
+    """Normalize AmountCharged to a float and Debit/Credit to consistent casing.
+
+    The old implementation chained .str.replace(",", "") into a plain
+    Series.replace("$", "", regex=True) -- since "$" is a regex end-of-string
+    anchor, that second call never actually stripped dollar signs, so any
+    amount written as "$1,234.56" silently became NaN and got dropped.
+    """
+    if df["AmountCharged"].dtype != "float":
+        df["AmountCharged"] = (
+            df["AmountCharged"].astype(str)
+            .str.replace(",", "", regex=False)
+            .str.replace("$", "", regex=False)
+            .str.strip()
+        )
+    df["AmountCharged"] = pd.to_numeric(df["AmountCharged"], errors="coerce")
+    if "Debit/Credit" in df.columns:
+        df["Debit/Credit"] = df["Debit/Credit"].astype(str).str.strip().str.capitalize()
+    return df
+
 
 def categorize_transactions(df):
     df["Category"] = "Uncategorized"
@@ -40,27 +302,27 @@ def categorize_transactions(df):
         lowered_keywords = [keyword.lower().strip() for keyword in keywords]
         for idx, row in df.iterrows():
             details = str(row["Details"]).lower().strip()
-            # Use substring match instead of exact
             if any(keyword in details for keyword in lowered_keywords):
                 df.at[idx, "Category"] = category
     return df
 
+
 def clean_dates(df):
     """Fix problematic dates in the dataframe"""
     df["Original_Date"] = df["Date"].copy()
+
     def fix_date(date_str):
         try:
             return pd.to_datetime(date_str, errors='coerce', dayfirst=True)
         except Exception:
             return pd.NaT
+
     df["Date"] = df["Date"].apply(fix_date)
     if df["Original_Date"].dtype == 'object':
-        # Handle 31/11 issue
         mask_nov31 = df["Original_Date"].str.contains("31/11", na=False)
         if mask_nov31.any():
             fixed_dates = df.loc[mask_nov31, "Original_Date"].str.replace("31/11", "30/11")
             df.loc[mask_nov31, "Date"] = pd.to_datetime(fixed_dates, dayfirst=True, errors='coerce')
-        # Handle unusual month values
         mask_month_13plus = df["Original_Date"].str.contains(r"\d+/(?:1[3-9]|2[0-9]|3[0-9])/", na=False)
         if mask_month_13plus.any():
             fixed_dates = df.loc[mask_month_13plus, "Original_Date"].str.replace(
@@ -71,55 +333,9 @@ def clean_dates(df):
     problem_count = df["Date"].isna().sum()
     return df, problem_count
 
-def process_excel_file(file):
-    """Process Excel files (xls, xlsx)"""
-    try:
-        df = pd.read_excel(file)
-        required_columns = ["Date", "Details", "AmountCharged", "Debit/Credit"]
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            column_mapping = {
-                "Transaction Date": "Date",
-                "TransactionDate": "Date",
-                "Date of Transaction": "Date",
-                "Tx Date": "Date",
-                "Description": "Details",
-                "Merchant": "Details",
-                "Transaction": "Details",
-                "Payee": "Details",
-                "Amount": "AmountCharged",
-                "Value": "AmountCharged",
-                "Transaction Amount": "AmountCharged",
-                "Type": "Debit/Credit",
-                "Transaction Type": "Debit/Credit"
-            }
-            # Fix: Map from alternatives to expected
-            mapping = {}
-            for alt, target in column_mapping.items():
-                if alt in df.columns and target in missing_columns:
-                    mapping[alt] = target
-            df = df.rename(columns=mapping)
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                st.error(f"Excel file is missing required columns: {', '.join(missing_columns)}")
-                st.info("Your Excel file should have columns: Date, Details, AmountCharged, Debit/Credit")
-                return None
-        df.columns = [col.strip() for col in df.columns]
-        # Handle AmountCharged formatting
-        if df["AmountCharged"].dtype != 'float':
-            df["AmountCharged"] = df["AmountCharged"].astype(str).str.replace(",", "").replace("$", "", regex=True)
-        df["AmountCharged"] = pd.to_numeric(df["AmountCharged"], errors='coerce')
-        df, problem_count = clean_dates(df)
-        if problem_count > 0:
-            st.warning(f"{problem_count} dates couldn't be fixed and were set to NaT. These rows will be excluded from analysis.")
-            df = df.dropna(subset=["Date"])
-        return categorize_transactions(df)
-    except Exception as e:
-        st.error(f"Error processing Excel file: {str(e)}")
-        return None
 
 def extract_text_from_pdf(file):
-    """Extract text content from a PDF file"""
+    """Extract raw text content from a PDF file"""
     try:
         pdf_reader = PyPDF2.PdfReader(file)
         text = ""
@@ -133,112 +349,37 @@ def extract_text_from_pdf(file):
         st.error(f"Failed to extract text from PDF: {str(e)}")
         return None
 
-def try_extract_tables_from_pdf(file):
-    """Try to extract tables from PDF using tabula"""
-    import tempfile
-    try:
-        # Save the file to a temporary file for tabula
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(file.read())
-            tmp_file_path = tmp_file.name
-        tables = tabula.read_pdf(tmp_file_path, pages='all', multiple_tables=True)
-        os.unlink(tmp_file_path)
-        if not tables:
-            return None
-        df = pd.concat(tables, ignore_index=True)
-        return df
-    except Exception as e:
-        st.warning(f"Could not extract tables from PDF: {str(e)}")
-        return None
 
 def process_pdf_file(file):
-    """Process PDF files and try to extract transaction data"""
-    if not PDF_SUPPORT:
-        st.error("PDF processing is not available. Please install PyPDF2 and tabula-py libraries.")
-        st.info("Run: pip install PyPDF2 tabula-py")
+    """Process PDF files: pull text out, then let Claude structure it into transactions."""
+    if not PYPDF2_AVAILABLE:
+        st.error("PDF processing is not available. Please install PyPDF2.")
         return None
-    try:
-        # Important: Reset file pointer for multiple reads
-        file.seek(0)
-        tables_df = try_extract_tables_from_pdf(file)
-        file.seek(0)
-        if tables_df is not None and not tables_df.empty:
-            st.success("Successfully extracted tables from PDF!")
-            st.write("Preview of extracted data:")
-            st.dataframe(tables_df.head())
-            st.info("Please map the extracted columns to the required format.")
-            columns = tables_df.columns.tolist()
-            col1, col2 = st.columns(2)
-            with col1:
-                date_col = st.selectbox("Which column contains Date?",
-                                       options=columns,
-                                       key="date_col")
-                details_col = st.selectbox("Which column contains Transaction Details?",
-                                         options=columns,
-                                         key="details_col")
-            with col2:
-                amount_col = st.selectbox("Which column contains Amount?",
-                                        options=columns,
-                                        key="amount_col")
-                type_col = st.selectbox("Which column indicates Debit/Credit?",
-                                      options=columns + ["Not available - all debits", "Not available - all credits"],
-                                      key="type_col")
-            if st.button("Process PDF Data"):
-                df = pd.DataFrame()
-                df["Date"] = tables_df[date_col]
-                df["Details"] = tables_df[details_col]
-                df["AmountCharged"] = tables_df[amount_col]
-                if type_col == "Not available - all debits":
-                    df["Debit/Credit"] = "Debit"
-                elif type_col == "Not available - all credits":
-                    df["Debit/Credit"] = "Credit"
-                else:
-                    df["Debit/Credit"] = tables_df[type_col]
-                df["Status"] = "SETTLED"
-                df, problem_count = clean_dates(df)
-                if df["AmountCharged"].dtype != 'float':
-                    df["AmountCharged"] = df["AmountCharged"].astype(str).str.replace(",", "").replace("$", "", regex=True)
-                df["AmountCharged"] = pd.to_numeric(df["AmountCharged"], errors='coerce')
-                return categorize_transactions(df)
-            return None
-        else:
-            pdf_text = extract_text_from_pdf(file)
-            if pdf_text:
-                st.warning("Could not automatically extract structured data from this PDF.")
-                st.info("PDF contains text but not in a easily recognizable table format.")
-                st.text_area("Extracted Text (first 1000 characters):", pdf_text[:1000], height=200)
-                st.info("You might need to manually extract data from this PDF or get a CSV/Excel version.")
-            else:
-                st.error("Could not extract any text from this PDF. It might be scanned or image-based.")
-            return None
-    except Exception as e:
-        st.error(f"Error processing PDF file: {str(e)}")
+    text = extract_text_from_pdf(file)
+    if not text:
+        st.error("Could not extract any text from this PDF. It might be scanned or image-based.")
         return None
 
-def load_transactions(file, file_type):
-    """Process different file types based on extension"""
-    try:
-        if file_type == "csv":
-            df = pd.read_csv(file)
-            df.columns = [col.strip() for col in df.columns]
-            if df["AmountCharged"].dtype != "float":
-                df["AmountCharged"] = df["AmountCharged"].astype(str).str.replace(",", "").replace("$", "", regex=True)
-            df["AmountCharged"] = pd.to_numeric(df["AmountCharged"], errors='coerce')
-            df, problem_count = clean_dates(df)
-            if problem_count > 0:
-                st.warning(f"{problem_count} dates couldn't be fixed and were set to NaT. These rows will be excluded from analysis.")
-                df = df.dropna(subset=["Date"])
-            return categorize_transactions(df)
-        elif file_type in ["xlsx", "xls"]:
-            return process_excel_file(file)
-        elif file_type == "pdf":
-            return process_pdf_file(file)
-        else:
-            st.error(f"Unsupported file type: {file_type}")
+    if ai_available():
+        with st.spinner("Using AI to read the PDF statement..."):
+            df = ai_extract_transactions_from_text(text)
+        if df is None or df.empty:
+            st.warning("AI couldn't find recognizable transactions in this PDF.")
+            st.text_area("Extracted text (first 1000 characters):", text[:1000], height=200)
             return None
-    except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
+        st.success(f"AI extracted {len(df)} transactions from the PDF.")
+        df = clean_amount_and_type_columns(df)
+        df, problem_count = clean_dates(df)
+        if problem_count > 0:
+            st.warning(f"{problem_count} dates couldn't be parsed and were excluded.")
+            df = df.dropna(subset=["Date"])
+        return categorize_transactions(df)
+    else:
+        st.warning("Automatic PDF parsing needs an Anthropic API key (see README for setup).")
+        st.text_area("Extracted text (first 1000 characters):", text[:1000], height=200)
+        st.info("You can also convert this statement to CSV/Excel and upload that instead.")
         return None
+
 
 def add_keyword_to_category(category, keyword):
     keyword = keyword.strip()
@@ -250,7 +391,60 @@ def add_keyword_to_category(category, keyword):
         return True
     return False
 
+
+def load_transactions(file, file_type):
+    """Process CSV/Excel/PDF files into a categorized transactions dataframe."""
+    try:
+        if file_type == "pdf":
+            return process_pdf_file(file)
+
+        if file_type == "csv":
+            df = pd.read_csv(file)
+        elif file_type in ["xlsx", "xls"]:
+            df = pd.read_excel(file)
+        else:
+            st.error(f"Unsupported file type: {file_type}")
+            return None
+
+        df.columns = [col.strip() for col in df.columns]
+        df, missing_columns = map_columns_with_aliases(df)
+
+        mapping_key = f"{file.name}_{file.size}"
+        if missing_columns and mapping_key in st.session_state.column_ai_mappings:
+            df = df.rename(columns=st.session_state.column_ai_mappings[mapping_key])
+            missing_columns = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+
+        if missing_columns:
+            st.error(f"File is missing required columns: {', '.join(missing_columns)}")
+            st.info(f"Found columns: {', '.join(df.columns)}")
+            st.info("Expected columns: Date, Details, AmountCharged, Debit/Credit (or common variants).")
+            if ai_available():
+                if st.button("🤖 Let AI map these columns", key=f"ai_map_btn_{mapping_key}"):
+                    with st.spinner("Asking AI to match your columns..."):
+                        mapping = ai_map_columns(df.columns.tolist(), df.head(3).to_string())
+                    if mapping:
+                        st.session_state.column_ai_mappings[mapping_key] = mapping
+                        st.rerun()
+                    else:
+                        st.error("AI couldn't confidently map these columns either.")
+            else:
+                st.caption("Add an Anthropic API key (see README) to let AI map unusual column names automatically.")
+            return None
+
+        df = clean_amount_and_type_columns(df)
+        df, problem_count = clean_dates(df)
+        if problem_count > 0:
+            st.warning(f"{problem_count} dates couldn't be fixed and were set to NaT. These rows will be excluded from analysis.")
+            df = df.dropna(subset=["Date"])
+        return categorize_transactions(df)
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        return None
+
+
 def main():
+    if not check_app_password():
+        return
     st.title("Personal Finance Dashboard")
     uploaded_file = st.file_uploader(
         "Upload your transaction or bank statement file",
@@ -266,13 +460,44 @@ def main():
             st.session_state.debits_df = debits_df.copy()
             tab1, tab2 = st.tabs(["Expenses (Debits)", "Payments (Credits)"])
             with tab1:
-                new_category = st.text_input("New category Name")
-                add_button = st.button("Add Category")
-                if add_button and new_category:
-                    if new_category not in st.session_state.categories:
-                        st.session_state.categories[new_category] = []
-                        save_categories()
-                        st.rerun()
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    new_category = st.text_input("New category Name")
+                    add_button = st.button("Add Category")
+                    if add_button and new_category:
+                        if new_category not in st.session_state.categories:
+                            st.session_state.categories[new_category] = []
+                            save_categories()
+                            st.rerun()
+                with col_b:
+                    if ai_available():
+                        st.write("")
+                        st.write("")
+                        if st.button("🤖 Auto-categorize with AI"):
+                            uncategorized = sorted(
+                                st.session_state.debits_df.loc[
+                                    st.session_state.debits_df["Category"] == "Uncategorized", "Details"
+                                ].dropna().unique().tolist()
+                            )
+                            if not uncategorized:
+                                st.info("Nothing to categorize — everything already has a category.")
+                            else:
+                                capped = uncategorized[:MAX_AI_CATEGORIZE_ITEMS]
+                                with st.spinner(f"Asking AI to categorize {len(capped)} transactions..."):
+                                    mapping = ai_categorize_details(capped, list(st.session_state.categories.keys()))
+                                if mapping:
+                                    applied = 0
+                                    for detail, category in mapping.items():
+                                        if category not in st.session_state.categories:
+                                            continue
+                                        matches = st.session_state.debits_df["Details"] == detail
+                                        st.session_state.debits_df.loc[matches, "Category"] = category
+                                        add_keyword_to_category(category, detail)
+                                        applied += 1
+                                    st.success(f"AI categorized {applied} transactions. Keywords saved for next time.")
+                                    st.rerun()
+                                else:
+                                    st.error("AI categorization failed. Try again in a moment.")
                 st.subheader("Your Expenses")
                 edited_df = st.data_editor(
                     st.session_state.debits_df[["Date", "Details", "AmountCharged", "Category"]],
@@ -321,23 +546,27 @@ def main():
                 st.metric("Total payments", f"{total_payments:,.2f} USD")
                 st.write(credits_df)
     with st.expander("Help & Instructions"):
-        st.markdown("""
+        ai_status = "enabled" if ai_available() else "not configured (add an API key to enable it, see README)"
+        st.markdown(f"""
         ### Supported File Types
         - **CSV**: Standard comma-separated values files with transaction data
         - **Excel**: Both .xlsx and .xls formats with transaction data
-        - **PDF**: The app will attempt to extract tables from PDF statements
+        - **PDF**: Text is pulled from the PDF and, when AI is enabled, structured into transactions automatically
 
         ### Required Columns
-        Your file should have these columns (or similar that can be mapped):
+        Your file should have these columns (or a common variant, which is auto-mapped):
         - **Date**: Transaction date
         - **Details**: Description of the transaction
         - **AmountCharged**: Transaction amount
         - **Debit/Credit**: Indicates whether it's an expense (Debit) or payment (Credit)
 
-        ### Working with PDFs
-        PDF support is experimental and works best with PDFs that have clearly defined tables.
-        You may need to manually map columns after uploading a PDF.
+        ### AI-assisted features (status: {ai_status})
+        - **PDF extraction**: reads unstructured statement text and turns it into transaction rows
+        - **Column mapping**: when a CSV/Excel file has unrecognized headers, AI can map them for you
+        - **Auto-categorize**: assigns categories to uncategorized transactions in one click, and saves the
+          keywords it learns so future uploads match for free without AI
         """)
+
 
 if __name__ == "__main__":
     main()
