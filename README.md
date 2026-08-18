@@ -21,10 +21,13 @@ automatic PDF parsing still works exactly as before.
 - **No hardcoded secrets.** The API key is read only from Streamlit secrets or an
   environment variable (`get_secret()` in `finapp.py`), never from source. `.streamlit/secrets.toml`
   is gitignored — only the placeholder `.example` file is committed.
-- **Rate limiting.** Every AI call goes through a shared limiter: a global cap (default
-  20 requests/hour across all visitors to the deployment) and a tighter per-browser-session
-  cap (default 5/hour). Tune `AI_GLOBAL_RATE_LIMIT` / `AI_SESSION_RATE_LIMIT` in `finapp.py`
-  if you want it looser or stricter.
+- **Rate limiting.** Every AI call goes through a shared limiter with three caps: an hourly
+  global cap (10/hour), a monthly global cap (100/30 days, so the hourly cap alone can't be
+  hit repeatedly all month and blow past your budget), and a per-browser-session cap
+  (5/hour). Tune `AI_GLOBAL_HOURLY_LIMIT` / `AI_GLOBAL_MONTHLY_LIMIT` / `AI_SESSION_HOURLY_LIMIT`
+  in `finapp.py` if you want it looser or stricter. These counters live in server memory and
+  reset on app reboot/sleep-wake, so they're a second line of defense — set a hard spend
+  limit in the Anthropic console (Settings → Limits) as the real backstop.
 - **Input truncation.** PDF text sent to the AI is capped (`MAX_PDF_CHARS`) and category
   suggestions are capped (`MAX_AI_CATEGORIZE_ITEMS`), so one huge file can't blow up a
   single request's cost.

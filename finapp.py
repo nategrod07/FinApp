@@ -25,12 +25,20 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 MAX_PDF_CHARS = 15000
 MAX_AI_CATEGORIZE_ITEMS = 200
 
-# AI calls cost real money, so both caps apply: a global cap shared by everyone
-# hitting this deployment, and a tighter per-browser-session cap.
-AI_GLOBAL_RATE_LIMIT = 20
-AI_GLOBAL_RATE_WINDOW_SECONDS = 3600
-AI_SESSION_RATE_LIMIT = 5
-AI_SESSION_RATE_WINDOW_SECONDS = 3600
+# AI calls cost real money. Three caps apply together:
+# - an hourly global cap: stops a burst (bug loop, scripted abuse) in its tracks
+# - a monthly global cap: bounds worst-case spend even if the hourly cap gets hit
+#   over and over across a whole month -- the hourly cap alone doesn't do this
+# - a per-session cap: keeps one browser session from using the whole budget itself
+# These live in server memory and reset on app reboot/sleep-wake, so they're a
+# second line of defense -- set a hard spend limit in the Anthropic console
+# (Settings -> Limits) as the real backstop.
+AI_GLOBAL_HOURLY_LIMIT = 10
+AI_GLOBAL_HOURLY_WINDOW_SECONDS = 3600
+AI_GLOBAL_MONTHLY_LIMIT = 100
+AI_GLOBAL_MONTHLY_WINDOW_SECONDS = 30 * 24 * 3600
+AI_SESSION_HOURLY_LIMIT = 5
+AI_SESSION_HOURLY_WINDOW_SECONDS = 3600
 
 REQUIRED_COLUMNS = ["Date", "Details", "AmountCharged", "Debit/Credit"]
 
@@ -138,21 +146,28 @@ def _prune_old(timestamps, window_seconds):
 
 
 def check_and_record_ai_call():
-    """Enforce a global cap (shared across everyone on this deployment) plus a
-    tighter per-session cap, so one browser session can't exhaust the shared budget.
-    Returns (allowed, message_if_blocked).
+    """Enforce hourly + monthly global caps (shared across everyone on this
+    deployment) plus a tighter per-session cap. Returns (allowed, message_if_blocked).
     """
     now = time.time()
     state = _global_rate_limiter_state()
     with state["lock"]:
-        state["call_times"] = _prune_old(state["call_times"], AI_GLOBAL_RATE_WINDOW_SECONDS)
-        if len(state["call_times"]) >= AI_GLOBAL_RATE_LIMIT:
-            return False, f"AI usage limit reached ({AI_GLOBAL_RATE_LIMIT} requests/hour for this app). Try again later."
+        # Keep a full month of history; the hourly count is just a shorter-window
+        # filter over the same list, so pruning here can't be done at the 1-hour
+        # window or the monthly count would never see anything.
+        state["call_times"] = _prune_old(state["call_times"], AI_GLOBAL_MONTHLY_WINDOW_SECONDS)
+        if len(state["call_times"]) >= AI_GLOBAL_MONTHLY_LIMIT:
+            return False, f"This app has hit its shared monthly AI budget ({AI_GLOBAL_MONTHLY_LIMIT}/30 days). Try again later."
+        hourly_count = len(_prune_old(state["call_times"], AI_GLOBAL_HOURLY_WINDOW_SECONDS))
+        if hourly_count >= AI_GLOBAL_HOURLY_LIMIT:
+            return False, f"AI usage limit reached ({AI_GLOBAL_HOURLY_LIMIT} requests/hour for this app). Try again later."
+
         if "ai_call_times" not in st.session_state:
             st.session_state.ai_call_times = []
-        st.session_state.ai_call_times = _prune_old(st.session_state.ai_call_times, AI_SESSION_RATE_WINDOW_SECONDS)
-        if len(st.session_state.ai_call_times) >= AI_SESSION_RATE_LIMIT:
-            return False, f"You've hit the per-session AI limit ({AI_SESSION_RATE_LIMIT} requests/hour). Try again later."
+        st.session_state.ai_call_times = _prune_old(st.session_state.ai_call_times, AI_SESSION_HOURLY_WINDOW_SECONDS)
+        if len(st.session_state.ai_call_times) >= AI_SESSION_HOURLY_LIMIT:
+            return False, f"You've hit the per-session AI limit ({AI_SESSION_HOURLY_LIMIT} requests/hour). Try again later."
+
         state["call_times"].append(now)
         st.session_state.ai_call_times.append(now)
         return True, None
