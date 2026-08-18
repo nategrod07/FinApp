@@ -30,16 +30,31 @@ auto-categorizing expenses, and viewing spending summaries.
 AI features are entirely optional. Without an API key configured, everything except
 automatic PDF parsing still works exactly as before.
 
+## Project structure
+
+The app is split by responsibility instead of living in one large file:
+
+| File | Responsibility |
+|---|---|
+| `finapp.py` | Entry point: page setup, password gate, the main UI layout, and the AI-categorize review dialog |
+| `config.py` | Constants: AI settings, rate limits, required columns/aliases, category icons |
+| `theme.py` | Light/dark palettes and the CSS/chart theming that applies them |
+| `secrets_utils.py` | Reading secrets (API key, app password) from `st.secrets`/env vars |
+| `category_state.py` | `categories.json` persistence and session-state init |
+| `ai_helpers.py` | Claude client, rate limiter, and the AI-assisted parsing/categorizing calls |
+| `parsing.py` | Turning an uploaded CSV/Excel/PDF into a categorized dataframe |
+| `history.py` | Reading, merging, and exporting the multi-month history CSV |
+
 ## Security & cost controls
 
 - **No hardcoded secrets.** The API key is read only from Streamlit secrets or an
-  environment variable (`get_secret()` in `finapp.py`), never from source. `.streamlit/secrets.toml`
-  is gitignored — only the placeholder `.example` file is committed.
+  environment variable (`get_secret()` in `secrets_utils.py`), never from source.
+  `.streamlit/secrets.toml` is gitignored — only the placeholder `.example` file is committed.
 - **Rate limiting.** Every AI call goes through a shared limiter with three caps: an hourly
   global cap (10/hour), a monthly global cap (100/30 days, so the hourly cap alone can't be
   hit repeatedly all month and blow past your budget), and a per-browser-session cap
   (5/hour). Tune `AI_GLOBAL_HOURLY_LIMIT` / `AI_GLOBAL_MONTHLY_LIMIT` / `AI_SESSION_HOURLY_LIMIT`
-  in `finapp.py` if you want it looser or stricter. These counters live in server memory and
+  in `config.py` if you want it looser or stricter. These counters live in server memory and
   reset on app reboot/sleep-wake, so they're a second line of defense — set a hard spend
   limit in the Anthropic console (Settings → Limits) as the real backstop.
 - **Input truncation.** PDF text sent to the AI is capped (`MAX_PDF_CHARS`) and category
