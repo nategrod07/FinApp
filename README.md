@@ -12,15 +12,20 @@ auto-categorizing expenses, and viewing spending summaries.
   pre-loaded in `categories.json` so you're not starting from an empty list
 - Keyword-based auto-categorization that learns as you correct it, with category icons and
   an at-a-glance metrics row (Total Spent / Total Payments / Net / Transaction count)
+- Light/dark mode toggle with a custom cream-and-dark-green theme (next to the title)
 - **Multi-month trends, with no database**: the Trends tab lets you download a "history" CSV
   after each upload; next time, upload your new statement plus that history file (via the
   "Merge with previous history" control) to combine them, skip duplicate transactions, and
   keep prior category corrections intact — the growing dataset lives in a file you hold, not
-  on the server, so it works even though Streamlit Cloud's filesystem doesn't persist
+  on the server, so it works even though Streamlit Cloud's filesystem doesn't persist. The
+  Trends tab has switchable views (Total Spending / By Category) and chart types (Bar / Line /
+  Area)
 - Optional AI features (via the Claude API), each opt-in so they never run without you asking:
   - **PDF parsing** — reads unstructured statement text and extracts transactions
   - **Column mapping fallback** — maps unusual/unrecognized CSV/Excel headers
-  - **Auto-categorize** — assigns categories to uncategorized transactions in one click
+  - **Auto-categorize** — assigns categories to uncategorized transactions in one click; anything
+    it isn't confident about pops up a one-at-a-time review screen where you pick an existing
+    category or create a new one, instead of being silently left uncategorized
 
 AI features are entirely optional. Without an API key configured, everything except
 automatic PDF parsing still works exactly as before.

@@ -86,6 +86,127 @@ HISTORY_COLUMNS = ["Date", "Details", "AmountCharged", "Debit/Credit", "Category
 def category_icon(category):
     return CATEGORY_ICONS.get(str(category).strip().lower(), DEFAULT_CATEGORY_ICON)
 
+
+# --- Theme ---------------------------------------------------------------
+# Streamlit's config.toml only expresses one static theme, so a runtime
+# light/dark toggle needs its own CSS injected over the top. config.toml is
+# still set to match the light palette below, since that's what paints
+# before any session state (and this CSS) exists on first load.
+
+LIGHT_PALETTE = {
+    "bg": "#FBF7EE",
+    "surface": "#F3ECD9",
+    "primary": "#1B4332",
+    "primary_light": "#2D6A4F",
+    "text": "#26261F",
+    "text_muted": "#5C5A4E",
+    "border": "#E2D5B7",
+    "plotly_template": "plotly_white",
+    "chart_colors": ["#1B4332", "#2D6A4F", "#40916C", "#52B788", "#74C69D", "#95D5B2", "#B7E4C7", "#D8F3DC"],
+}
+DARK_PALETTE = {
+    "bg": "#12201A",
+    "surface": "#1B2B22",
+    "primary": "#52B788",
+    "primary_light": "#74C69D",
+    "text": "#F1EAD9",
+    "text_muted": "#B7C4B9",
+    "border": "#2C3F32",
+    "plotly_template": "plotly_dark",
+    "chart_colors": ["#95D5B2", "#74C69D", "#52B788", "#40916C", "#B7E4C7", "#D8F3DC", "#2D6A4F", "#B7E4C7"],
+}
+
+
+def apply_theme_css(palette):
+    st.markdown(f"""
+    <style>
+    .stApp {{
+        background-color: {palette['bg']};
+        color: {palette['text']};
+    }}
+    [data-testid="stHeader"] {{
+        background-color: transparent;
+    }}
+    [data-testid="stSidebar"],
+    [data-testid="stMetric"],
+    [data-testid="stExpander"],
+    [data-testid="stFileUploaderDropzone"],
+    [data-testid="stVerticalBlockBorderWrapper"] {{
+        background-color: {palette['surface']};
+        border-radius: 12px;
+        border: 1px solid {palette['border']};
+    }}
+    [data-testid="stFileUploaderDropzoneInstructions"] span,
+    [data-testid="stFileUploaderDropzoneInstructions"] small,
+    [data-testid="stFileUploaderDropzoneInstructions"] svg {{
+        color: {palette['text_muted']} !important;
+        fill: {palette['text_muted']} !important;
+    }}
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] {{
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+    }}
+    [data-testid="stMetric"] {{
+        padding: 1rem;
+    }}
+    h1, h2, h3, h4, p, span, label, div, .stMarkdown {{
+        color: {palette['text']};
+    }}
+    [data-testid="stMetricValue"] {{
+        color: {palette['text']} !important;
+    }}
+    [data-testid="stMetricLabel"] {{
+        color: {palette['text_muted']} !important;
+    }}
+    [data-testid^="stBaseButton"] {{
+        border-radius: 8px !important;
+        border: 1px solid {palette['primary']} !important;
+        background-color: {palette['surface']} !important;
+        color: {palette['text']} !important;
+    }}
+    [data-testid="stBaseButton-primary"] {{
+        background-color: {palette['primary']} !important;
+        color: {palette['bg']} !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        color: {palette['text_muted']};
+    }}
+    .stTabs [aria-selected="true"] {{
+        color: {palette['primary']};
+    }}
+    /* The selectbox's own background is locked to Streamlit's static (light)
+       config.toml theme regardless of this toggle, so fighting it to go dark
+       just reintroduces invisible text -- instead pin its text dark so it
+       always reads against that permanently-light background. */
+    [data-baseweb="select"] * {{
+        color: {LIGHT_PALETTE['text']} !important;
+    }}
+    [data-baseweb="popover"], [data-baseweb="menu"], [role="option"] {{
+        background-color: {LIGHT_PALETTE['surface']} !important;
+        color: {LIGHT_PALETTE['text']} !important;
+    }}
+    [data-testid="stTextInput"] input, [data-testid="stTextInput"] div {{
+        background-color: {palette['surface']} !important;
+        color: {palette['text']} !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def themed_chart(fig, palette, height=380):
+    fig.update_layout(
+        template=palette["plotly_template"],
+        paper_bgcolor=palette["surface"],
+        plot_bgcolor=palette["surface"],
+        font_color=palette["text"],
+        title_font_color=palette["text"],
+        legend_font_color=palette["text"],
+        height=height,
+        margin=dict(t=40, b=20, l=20, r=20),
+    )
+    return fig
+
+
 # Session state setup
 category_file = "categories.json"
 if "categories" not in st.session_state:
@@ -94,6 +215,8 @@ if "categories" not in st.session_state:
     }
 if "column_ai_mappings" not in st.session_state:
     st.session_state.column_ai_mappings = {}
+if "manual_categorize_queue" not in st.session_state:
+    st.session_state.manual_categorize_queue = []
 
 if os.path.exists(category_file):
     with open(category_file, "r") as f:
@@ -529,27 +652,80 @@ def load_transactions(file, file_type):
         return None
 
 
+def _clear_manual_categorize_widgets():
+    for k in ["manual_cat_mode", "manual_cat_existing", "manual_cat_new"]:
+        st.session_state.pop(k, None)
+
+
+@st.dialog("Categorize this transaction")
+def categorize_dialog():
+    if not st.session_state.manual_categorize_queue:
+        return
+    item = st.session_state.manual_categorize_queue[0]
+    remaining = len(st.session_state.manual_categorize_queue)
+    st.write(f"**{item['details']}**")
+    st.caption(f"${item['amount']:,.2f} · {remaining} transaction{'s' if remaining != 1 else ''} left to review")
+
+    existing_categories = [c for c in st.session_state.categories.keys() if c != "Uncategorized"]
+    mode = st.radio("Assign to:", ["Existing category", "New category"], horizontal=True, key="manual_cat_mode")
+    if mode == "Existing category":
+        chosen = st.selectbox("Category", options=existing_categories, key="manual_cat_existing")
+    else:
+        chosen = st.text_input("New category name", key="manual_cat_new").strip()
+
+    col_skip, col_save = st.columns(2)
+    with col_skip:
+        if st.button("Skip", use_container_width=True):
+            _clear_manual_categorize_widgets()
+            st.session_state.manual_categorize_queue.pop(0)
+            st.rerun()
+    with col_save:
+        if st.button("Save", type="primary", use_container_width=True):
+            if not chosen:
+                st.warning("Pick or name a category first.")
+            else:
+                if chosen not in st.session_state.categories:
+                    st.session_state.categories[chosen] = []
+                matches = st.session_state.debits_df["Details"] == item["details"]
+                st.session_state.debits_df.loc[matches, "Category"] = chosen
+                add_keyword_to_category(chosen, item["details"])
+                _clear_manual_categorize_widgets()
+                st.session_state.manual_categorize_queue.pop(0)
+                st.rerun()
+
+
 def main():
     if not check_app_password():
         return
-    st.title("💰 Personal Finance Dashboard")
 
-    col_upload, col_history = st.columns([2, 1])
-    with col_upload:
-        uploaded_file = st.file_uploader(
-            "Upload your transaction or bank statement file",
-            type=["csv", "xlsx", "xls", "pdf"]
-        )
-    with col_history:
-        with st.expander("📎 Merge with previous history (optional)"):
-            st.caption(
-                "Have a history file downloaded from this app before? Upload it to combine "
-                "with the new statement and build a trend over time -- no account needed, "
-                "you just hang on to the file."
+    dark_mode = st.session_state.get("dark_mode_toggle", False)
+    palette = DARK_PALETTE if dark_mode else LIGHT_PALETTE
+    apply_theme_css(palette)
+
+    col_title, col_toggle = st.columns([5, 1])
+    with col_title:
+        st.title("💰 Personal Finance Dashboard")
+    with col_toggle:
+        st.write("")
+        st.toggle("🌙 Dark", key="dark_mode_toggle")
+
+    with st.container(border=True):
+        col_upload, col_history = st.columns([3, 2])
+        with col_upload:
+            uploaded_file = st.file_uploader(
+                "Upload your transaction or bank statement file",
+                type=["csv", "xlsx", "xls", "pdf"]
             )
-            history_file = st.file_uploader(
-                "History CSV", type=["csv"], key="history_uploader", label_visibility="collapsed"
-            )
+        with col_history:
+            with st.expander("📎 Merge with previous history (optional)"):
+                st.caption(
+                    "Have a history file downloaded from this app before? Upload it to combine "
+                    "with the new statement and build a trend over time -- no account needed, "
+                    "you just hang on to the file."
+                )
+                history_file = st.file_uploader(
+                    "History CSV", type=["csv"], key="history_uploader", label_visibility="collapsed"
+                )
 
     if uploaded_file is not None:
         file_type = uploaded_file.name.split(".")[-1].lower()
@@ -567,148 +743,193 @@ def main():
             credits_df = df[df["Debit/Credit"] == "Credit"].copy()
             st.session_state.debits_df = debits_df.copy()
 
-            metric_cols = st.columns(4)
-            metric_cols[0].metric("Total Spent", f"${debits_df['AmountCharged'].sum():,.2f}")
-            metric_cols[1].metric("Total Payments", f"${credits_df['AmountCharged'].sum():,.2f}")
-            metric_cols[2].metric("Net", f"${credits_df['AmountCharged'].sum() - debits_df['AmountCharged'].sum():,.2f}")
-            metric_cols[3].metric("Transactions", f"{len(df):,}")
+            if st.session_state.manual_categorize_queue:
+                categorize_dialog()
+
+            with st.container(border=True):
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Total Spent", f"${debits_df['AmountCharged'].sum():,.2f}")
+                metric_cols[1].metric("Total Payments", f"${credits_df['AmountCharged'].sum():,.2f}")
+                metric_cols[2].metric("Net", f"${credits_df['AmountCharged'].sum() - debits_df['AmountCharged'].sum():,.2f}")
+                metric_cols[3].metric("Transactions", f"{len(df):,}")
 
             tab1, tab2, tab3 = st.tabs(["💸 Expenses (Debits)", "💵 Payments (Credits)", "📈 Trends"])
             with tab1:
-                col_a, col_b = st.columns([2, 1])
-                with col_a:
-                    new_category = st.text_input("New category Name")
-                    add_button = st.button("Add Category")
-                    if add_button and new_category:
-                        if new_category not in st.session_state.categories:
-                            st.session_state.categories[new_category] = []
-                            save_categories()
-                            st.rerun()
-                with col_b:
-                    if ai_available():
-                        st.write("")
-                        st.write("")
-                        if st.button("🤖 Auto-categorize with AI"):
-                            uncategorized = sorted(
-                                st.session_state.debits_df.loc[
-                                    st.session_state.debits_df["Category"] == "Uncategorized", "Details"
-                                ].dropna().unique().tolist()
-                            )
-                            if not uncategorized:
-                                st.info("Nothing to categorize — everything already has a category.")
-                            else:
-                                capped = uncategorized[:MAX_AI_CATEGORIZE_ITEMS]
-                                with st.spinner(f"Asking AI to categorize {len(capped)} transactions..."):
-                                    mapping = ai_categorize_details(capped, list(st.session_state.categories.keys()))
-                                if mapping:
-                                    applied = 0
-                                    for detail, category in mapping.items():
-                                        if category not in st.session_state.categories:
-                                            continue
-                                        matches = st.session_state.debits_df["Details"] == detail
-                                        st.session_state.debits_df.loc[matches, "Category"] = category
-                                        add_keyword_to_category(category, detail)
-                                        applied += 1
-                                    st.success(f"AI categorized {applied} transactions. Keywords saved for next time.")
-                                    st.rerun()
+                with st.container(border=True):
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        new_category = st.text_input("New category Name")
+                        add_button = st.button("Add Category", use_container_width=True)
+                        if add_button and new_category:
+                            if new_category not in st.session_state.categories:
+                                st.session_state.categories[new_category] = []
+                                save_categories()
+                                st.rerun()
+                    with col_b:
+                        if ai_available():
+                            st.write("Let AI sort your uncategorized expenses:")
+                            if st.button("🤖 Auto-categorize with AI", use_container_width=True):
+                                uncategorized = sorted(
+                                    st.session_state.debits_df.loc[
+                                        st.session_state.debits_df["Category"] == "Uncategorized", "Details"
+                                    ].dropna().unique().tolist()
+                                )
+                                if not uncategorized:
+                                    st.info("Nothing to categorize — everything already has a category.")
                                 else:
-                                    st.error("AI categorization failed. Try again in a moment.")
-                st.subheader("Your Expenses")
-                edited_df = st.data_editor(
-                    st.session_state.debits_df[["Date", "Details", "AmountCharged", "Category"]],
-                    column_config={
-                        "Date": st.column_config.DateColumn("Date", format="MM/DD/YYYY"),
-                        "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD"),
-                        "Category": st.column_config.SelectboxColumn(
-                            "Category",
-                            options=list(st.session_state.categories.keys())
+                                    capped = uncategorized[:MAX_AI_CATEGORIZE_ITEMS]
+                                    with st.spinner(f"Asking AI to categorize {len(capped)} transactions..."):
+                                        mapping = ai_categorize_details(capped, list(st.session_state.categories.keys()))
+                                    if mapping:
+                                        applied = 0
+                                        unresolved = []
+                                        for detail in capped:
+                                            category = mapping.get(detail, "Uncategorized")
+                                            if category == "Uncategorized" or category not in st.session_state.categories:
+                                                unresolved.append(detail)
+                                                continue
+                                            matches = st.session_state.debits_df["Details"] == detail
+                                            st.session_state.debits_df.loc[matches, "Category"] = category
+                                            add_keyword_to_category(category, detail)
+                                            applied += 1
+                                        if unresolved:
+                                            queue_items = []
+                                            for detail in unresolved:
+                                                amt_matches = st.session_state.debits_df.loc[
+                                                    st.session_state.debits_df["Details"] == detail, "AmountCharged"
+                                                ]
+                                                amount = amt_matches.iloc[0] if not amt_matches.empty else 0
+                                                queue_items.append({"details": detail, "amount": amount})
+                                            st.session_state.manual_categorize_queue = queue_items
+                                        st.success(
+                                            f"AI categorized {applied} transaction(s). "
+                                            f"{len(unresolved)} need your input."
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error("AI categorization failed. Try again in a moment.")
+
+                with st.container(border=True):
+                    st.subheader("Your Expenses")
+                    edited_df = st.data_editor(
+                        st.session_state.debits_df[["Date", "Details", "AmountCharged", "Category"]],
+                        column_config={
+                            "Date": st.column_config.DateColumn("Date", format="MM/DD/YYYY"),
+                            "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD"),
+                            "Category": st.column_config.SelectboxColumn(
+                                "Category",
+                                options=list(st.session_state.categories.keys())
+                            )
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key="category_editor"
+                    )
+                    save_button = st.button("Apply Changes", type="primary")
+                    if save_button:
+                        for idx, row in edited_df.iterrows():
+                            new_category = row["Category"]
+                            if new_category == st.session_state.debits_df.at[idx, "Category"]:
+                                continue
+                            details = row["Details"]
+                            st.session_state.debits_df.at[idx, "Category"] = new_category
+                            add_keyword_to_category(new_category, details)
+
+                with st.container(border=True):
+                    st.subheader('Expense Summary')
+                    category_totals = st.session_state.debits_df.groupby("Category")["AmountCharged"].sum().reset_index()
+                    category_totals = category_totals.sort_values("AmountCharged", ascending=False)
+                    category_totals["Category"] = category_totals["Category"].apply(
+                        lambda c: f"{category_icon(c)} {c}"
+                    )
+                    col_table, col_chart = st.columns(2)
+                    with col_table:
+                        st.dataframe(
+                            category_totals,
+                            column_config={
+                                "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD")
+                            },
+                            use_container_width=True,
+                            hide_index=True
                         )
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key="category_editor"
-                )
-                save_button = st.button("Apply Changes", type="primary")
-                if save_button:
-                    for idx, row in edited_df.iterrows():
-                        new_category = row["Category"]
-                        if new_category == st.session_state.debits_df.at[idx, "Category"]:
-                            continue
-                        details = row["Details"]
-                        st.session_state.debits_df.at[idx, "Category"] = new_category
-                        add_keyword_to_category(new_category, details)
-                st.subheader('Expense Summary')
-                category_totals = st.session_state.debits_df.groupby("Category")["AmountCharged"].sum().reset_index()
-                category_totals = category_totals.sort_values("AmountCharged", ascending=False)
-                category_totals["Category"] = category_totals["Category"].apply(
-                    lambda c: f"{category_icon(c)} {c}"
-                )
-                st.dataframe(
-                    category_totals,
-                    column_config={
-                        "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
-                fig = px.pie(
-                    category_totals,
-                    values="AmountCharged",
-                    names="Category",
-                    title="Expenses by Category",
-                    color_discrete_sequence=px.colors.qualitative.Set2
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    with col_chart:
+                        fig = px.pie(
+                            category_totals,
+                            values="AmountCharged",
+                            names="Category",
+                            title="Expenses by Category",
+                            color_discrete_sequence=palette["chart_colors"]
+                        )
+                        st.plotly_chart(themed_chart(fig, palette), use_container_width=True)
             with tab2:
-                st.subheader("Payment Summary")
-                total_payments = credits_df["AmountCharged"].sum()
-                st.metric("Total payments", f"{total_payments:,.2f} USD")
-                st.dataframe(credits_df, use_container_width=True, hide_index=True)
+                with st.container(border=True):
+                    st.subheader("Payment Summary")
+                    total_payments = credits_df["AmountCharged"].sum()
+                    st.metric("Total payments", f"{total_payments:,.2f} USD")
+                    st.dataframe(credits_df, use_container_width=True, hide_index=True)
             with tab3:
-                st.subheader("Spending Trends")
-                trend_source = st.session_state.debits_df
-                if trend_source.empty:
-                    st.info("No expense data to chart yet.")
-                else:
-                    trend_df = trend_source.copy()
-                    trend_df["Month"] = trend_df["Date"].dt.to_period("M").astype(str)
-                    monthly_totals = trend_df.groupby("Month")["AmountCharged"].sum().reset_index().sort_values("Month")
-                    if len(monthly_totals) < 2:
-                        st.caption(
-                            "Only one month of data so far — download your history below and merge it back in "
-                            "next time you upload a statement to build a real trend."
-                        )
-                    fig_trend = px.bar(
-                        monthly_totals, x="Month", y="AmountCharged",
-                        title="Monthly Spending",
-                        labels={"AmountCharged": "Total Spent ($)"},
-                        color_discrete_sequence=px.colors.qualitative.Set2
-                    )
-                    st.plotly_chart(fig_trend, use_container_width=True)
+                with st.container(border=True):
+                    st.subheader("Spending Trends")
+                    trend_source = st.session_state.debits_df
+                    if trend_source.empty:
+                        st.info("No expense data to chart yet.")
+                    else:
+                        col_view, col_chart_type = st.columns(2)
+                        with col_view:
+                            view = st.radio(
+                                "View", ["Total Spending", "By Category"], horizontal=True, key="trend_view"
+                            )
+                        with col_chart_type:
+                            chart_type = st.radio(
+                                "Chart type", ["Bar", "Line", "Area"], horizontal=True, key="trend_chart_type"
+                            )
 
-                    cat_trend = trend_df.groupby(["Month", "Category"])["AmountCharged"].sum().reset_index()
-                    fig_cat_trend = px.bar(
-                        cat_trend, x="Month", y="AmountCharged", color="Category",
-                        title="Monthly Spending by Category",
-                        labels={"AmountCharged": "Total Spent ($)"},
-                        color_discrete_sequence=px.colors.qualitative.Set2
-                    )
-                    st.plotly_chart(fig_cat_trend, use_container_width=True)
+                        trend_df = trend_source.copy()
+                        trend_df["Month"] = trend_df["Date"].dt.to_period("M").astype(str)
 
-                st.divider()
-                st.subheader("Save Your History")
-                st.caption(
-                    "Download this combined, categorized dataset. Next time you're back, upload it again "
-                    "under \"Merge with previous history\" above along with your new statement -- that's "
-                    "how this app keeps a running history without needing its own database."
-                )
-                history_csv = build_history_csv(st.session_state.debits_df, credits_df)
-                st.download_button(
-                    "⬇️ Download updated history (CSV)",
-                    data=history_csv,
-                    file_name="finapp_history.csv",
-                    mime="text/csv"
-                )
+                        if len(trend_df["Month"].unique()) < 2:
+                            st.caption(
+                                "Only one month of data so far — download your history below and merge it back "
+                                "in next time you upload a statement to build a real trend."
+                            )
+
+                        chart_fn = {"Bar": px.bar, "Line": px.line, "Area": px.area}[chart_type]
+                        if view == "Total Spending":
+                            monthly_totals = trend_df.groupby("Month")["AmountCharged"].sum().reset_index().sort_values("Month")
+                            fig_trend = chart_fn(
+                                monthly_totals, x="Month", y="AmountCharged",
+                                title="Monthly Spending",
+                                labels={"AmountCharged": "Total Spent ($)"},
+                                color_discrete_sequence=palette["chart_colors"]
+                            )
+                        else:
+                            cat_trend = trend_df.groupby(["Month", "Category"])["AmountCharged"].sum().reset_index().sort_values("Month")
+                            chart_kwargs = {"color": "Category"}
+                            if chart_type == "Bar":
+                                chart_kwargs["barmode"] = "stack"
+                            fig_trend = chart_fn(
+                                cat_trend, x="Month", y="AmountCharged",
+                                title="Monthly Spending by Category",
+                                labels={"AmountCharged": "Total Spent ($)"},
+                                color_discrete_sequence=palette["chart_colors"],
+                                **chart_kwargs
+                            )
+                        st.plotly_chart(themed_chart(fig_trend, palette), use_container_width=True)
+
+                with st.container(border=True):
+                    st.subheader("Save Your History")
+                    st.caption(
+                        "Download this combined, categorized dataset. Next time you're back, upload it again "
+                        "under \"Merge with previous history\" above along with your new statement -- that's "
+                        "how this app keeps a running history without needing its own database."
+                    )
+                    history_csv = build_history_csv(st.session_state.debits_df, credits_df)
+                    st.download_button(
+                        "⬇️ Download updated history (CSV)",
+                        data=history_csv,
+                        file_name="finapp_history.csv",
+                        mime="text/csv"
+                    )
     with st.expander("Help & Instructions"):
         ai_status = "enabled" if ai_available() else "not configured (add an API key to enable it, see README)"
         st.markdown(f"""
@@ -727,8 +948,9 @@ def main():
         ### AI-assisted features (status: {ai_status})
         - **PDF extraction**: reads unstructured statement text and turns it into transaction rows
         - **Column mapping**: when a CSV/Excel file has unrecognized headers, AI can map them for you
-        - **Auto-categorize**: assigns categories to uncategorized transactions in one click, and saves the
-          keywords it learns so future uploads match for free without AI
+        - **Auto-categorize**: assigns categories to uncategorized transactions in one click. Anything AI
+          isn't confident about pops up as a quick "categorize this" screen instead of being left alone,
+          where you can assign an existing category or create a new one on the spot.
 
         ### Building a history across months
         This app doesn't store anything on a server between sessions. Instead, the **Trends** tab lets
@@ -741,6 +963,9 @@ def main():
         A set of common categories (Groceries, Dining Out, Transportation, Rent/Mortgage, Utilities,
         Healthcare, Subscriptions, Entertainment, Income, Fees & Interest, Miscellaneous) comes
         pre-loaded so you're not starting from a blank list -- add, rename, or ignore any of them.
+
+        ### Light / dark mode
+        Use the toggle next to the title to switch themes.
         """)
 
 
