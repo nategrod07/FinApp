@@ -7,7 +7,16 @@ auto-categorizing expenses, and viewing spending summaries.
 
 - Upload CSV, XLSX/XLS, or PDF statements
 - Automatic column mapping for common header variants (e.g. "Description" → "Details")
-- Keyword-based auto-categorization that learns as you correct it
+- A starter set of common categories (Groceries, Dining Out, Transportation, Rent/Mortgage,
+  Utilities, Healthcare, Subscriptions, Entertainment, Income, Fees & Interest, Miscellaneous)
+  pre-loaded in `categories.json` so you're not starting from an empty list
+- Keyword-based auto-categorization that learns as you correct it, with category icons and
+  an at-a-glance metrics row (Total Spent / Total Payments / Net / Transaction count)
+- **Multi-month trends, with no database**: the Trends tab lets you download a "history" CSV
+  after each upload; next time, upload your new statement plus that history file (via the
+  "Merge with previous history" control) to combine them, skip duplicate transactions, and
+  keep prior category corrections intact — the growing dataset lives in a file you hold, not
+  on the server, so it works even though Streamlit Cloud's filesystem doesn't persist
 - Optional AI features (via the Claude API), each opt-in so they never run without you asking:
   - **PDF parsing** — reads unstructured statement text and extracts transactions
   - **Column mapping fallback** — maps unusual/unrecognized CSV/Excel headers
@@ -87,10 +96,15 @@ a managed Streamlit app; the only real way to get that is running it yourself on
 always-on free VM (e.g. an Oracle Cloud "Always Free" instance), which trades the sleep
 issue for doing your own server administration.
 
-## Known limitation: storage is not persistent on the cloud
+## Known limitation: category keywords aren't persistent on the cloud
 
 `categories.json` is read/written as a local file. That works for local development, but
-Streamlit Community Cloud's filesystem resets on every redeploy/restart, so categories
-learned through the UI won't survive one. This wasn't part of the current fix — worth
-revisiting later (e.g. moving categories/transactions into a small hosted database) if you
-want history to persist across sessions on the cloud.
+Streamlit Community Cloud's filesystem resets on every redeploy/restart, so keywords learned
+through the UI (via manual category corrections or the AI auto-categorize button) won't
+survive one — you'd start back at the committed starter categories after a restart.
+
+This is different from transaction *history*, which now persists via the download/re-upload
+history-file workflow described above (that data lives in a file on your machine, so it's
+unaffected by the server resetting). Only the learned keyword list is still server-local.
+Worth revisiting later (e.g. a small hosted database) if the repeated re-learning gets
+annoying.

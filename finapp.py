@@ -19,7 +19,7 @@ try:
 except ImportError:
     ANTHROPIC_SDK_AVAILABLE = False
 
-st.set_page_config(page_title="FinApp", page_icon="$$", layout="wide")
+st.set_page_config(page_title="FinApp", page_icon="💰", layout="wide")
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 MAX_PDF_CHARS = 15000
@@ -59,6 +59,32 @@ COLUMN_ALIASES = {
     "Type": "Debit/Credit",
     "Transaction Type": "Debit/Credit",
 }
+
+CATEGORY_ICONS = {
+    "uncategorized": "❓",
+    "groceries": "🛒",
+    "dining out": "🍽️",
+    "eating out": "🍽️",
+    "transportation": "⛽",
+    "rent/mortgage": "🏠",
+    "utilities": "💡",
+    "insurance": "🛡️",
+    "healthcare": "🏥",
+    "subscriptions": "📺",
+    "shopping": "🛍️",
+    "travel": "✈️",
+    "entertainment": "🎬",
+    "income": "💰",
+    "fees & interest": "💳",
+    "miscellaneous": "📦",
+}
+DEFAULT_CATEGORY_ICON = "🏷️"
+
+HISTORY_COLUMNS = ["Date", "Details", "AmountCharged", "Debit/Credit", "Category"]
+
+
+def category_icon(category):
+    return CATEGORY_ICONS.get(str(category).strip().lower(), DEFAULT_CATEGORY_ICON)
 
 # Session state setup
 category_file = "categories.json"
@@ -322,6 +348,52 @@ def categorize_transactions(df):
     return df
 
 
+def read_history_file(file):
+    """Read a history CSV previously downloaded from this app (already in our schema).
+
+    Trusts the stored Category as-is rather than re-running categorize_transactions,
+    so manual corrections from a prior session survive the round trip.
+    """
+    try:
+        df = pd.read_csv(file)
+        df.columns = [c.strip() for c in df.columns]
+        missing = [c for c in HISTORY_COLUMNS if c not in df.columns]
+        if missing:
+            st.warning(f"History file is missing columns ({', '.join(missing)}) and was ignored.")
+            return None
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])
+        df["AmountCharged"] = pd.to_numeric(df["AmountCharged"], errors="coerce")
+        df["Debit/Credit"] = df["Debit/Credit"].astype(str).str.strip().str.capitalize()
+        return df
+    except Exception as e:
+        st.warning(f"Could not read history file: {str(e)}")
+        return None
+
+
+def merge_with_history(new_df, history_df):
+    """Combine a freshly-parsed statement with a prior history file, deduping by
+    transaction identity. History rows win on duplicates so manual category edits
+    from earlier sessions aren't clobbered by a fresh keyword-match re-run.
+    """
+    if history_df is None or history_df.empty:
+        return new_df
+    combined = pd.concat([history_df, new_df], ignore_index=True, sort=False)
+    combined = combined.drop_duplicates(
+        subset=["Date", "Details", "AmountCharged", "Debit/Credit"], keep="first"
+    )
+    return combined.sort_values("Date").reset_index(drop=True)
+
+
+def build_history_csv(debits_df, credits_df):
+    """Serialize the current combined dataset back into the downloadable history format."""
+    combined = pd.concat([debits_df, credits_df], ignore_index=True, sort=False)
+    combined = combined.sort_values("Date")
+    out = combined[HISTORY_COLUMNS].copy()
+    out["Date"] = out["Date"].dt.strftime("%Y-%m-%d")
+    return out.to_csv(index=False).encode("utf-8")
+
+
 def clean_dates(df):
     """Fix problematic dates in the dataframe"""
     df["Original_Date"] = df["Date"].copy()
@@ -460,20 +532,48 @@ def load_transactions(file, file_type):
 def main():
     if not check_app_password():
         return
-    st.title("Personal Finance Dashboard")
-    uploaded_file = st.file_uploader(
-        "Upload your transaction or bank statement file",
-        type=["csv", "xlsx", "xls", "pdf"]
-    )
+    st.title("💰 Personal Finance Dashboard")
+
+    col_upload, col_history = st.columns([2, 1])
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "Upload your transaction or bank statement file",
+            type=["csv", "xlsx", "xls", "pdf"]
+        )
+    with col_history:
+        with st.expander("📎 Merge with previous history (optional)"):
+            st.caption(
+                "Have a history file downloaded from this app before? Upload it to combine "
+                "with the new statement and build a trend over time -- no account needed, "
+                "you just hang on to the file."
+            )
+            history_file = st.file_uploader(
+                "History CSV", type=["csv"], key="history_uploader", label_visibility="collapsed"
+            )
+
     if uploaded_file is not None:
         file_type = uploaded_file.name.split(".")[-1].lower()
         st.info(f"Processing {file_type.upper()} file: {uploaded_file.name}")
         df = load_transactions(uploaded_file, file_type)
         if df is not None:
+            if history_file is not None:
+                history_df = read_history_file(history_file)
+                if history_df is not None:
+                    new_count = len(df)
+                    df = merge_with_history(df, history_df)
+                    st.success(f"Merged with history: {len(df)} total transactions ({new_count} from this upload).")
+
             debits_df = df[df["Debit/Credit"] == "Debit"].copy()
             credits_df = df[df["Debit/Credit"] == "Credit"].copy()
             st.session_state.debits_df = debits_df.copy()
-            tab1, tab2 = st.tabs(["Expenses (Debits)", "Payments (Credits)"])
+
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("Total Spent", f"${debits_df['AmountCharged'].sum():,.2f}")
+            metric_cols[1].metric("Total Payments", f"${credits_df['AmountCharged'].sum():,.2f}")
+            metric_cols[2].metric("Net", f"${credits_df['AmountCharged'].sum() - debits_df['AmountCharged'].sum():,.2f}")
+            metric_cols[3].metric("Transactions", f"{len(df):,}")
+
+            tab1, tab2, tab3 = st.tabs(["💸 Expenses (Debits)", "💵 Payments (Credits)", "📈 Trends"])
             with tab1:
                 col_a, col_b = st.columns([2, 1])
                 with col_a:
@@ -540,6 +640,9 @@ def main():
                 st.subheader('Expense Summary')
                 category_totals = st.session_state.debits_df.groupby("Category")["AmountCharged"].sum().reset_index()
                 category_totals = category_totals.sort_values("AmountCharged", ascending=False)
+                category_totals["Category"] = category_totals["Category"].apply(
+                    lambda c: f"{category_icon(c)} {c}"
+                )
                 st.dataframe(
                     category_totals,
                     column_config={
@@ -552,14 +655,60 @@ def main():
                     category_totals,
                     values="AmountCharged",
                     names="Category",
-                    title="Expenses by Category"
+                    title="Expenses by Category",
+                    color_discrete_sequence=px.colors.qualitative.Set2
                 )
                 st.plotly_chart(fig, use_container_width=True)
             with tab2:
                 st.subheader("Payment Summary")
                 total_payments = credits_df["AmountCharged"].sum()
                 st.metric("Total payments", f"{total_payments:,.2f} USD")
-                st.write(credits_df)
+                st.dataframe(credits_df, use_container_width=True, hide_index=True)
+            with tab3:
+                st.subheader("Spending Trends")
+                trend_source = st.session_state.debits_df
+                if trend_source.empty:
+                    st.info("No expense data to chart yet.")
+                else:
+                    trend_df = trend_source.copy()
+                    trend_df["Month"] = trend_df["Date"].dt.to_period("M").astype(str)
+                    monthly_totals = trend_df.groupby("Month")["AmountCharged"].sum().reset_index().sort_values("Month")
+                    if len(monthly_totals) < 2:
+                        st.caption(
+                            "Only one month of data so far — download your history below and merge it back in "
+                            "next time you upload a statement to build a real trend."
+                        )
+                    fig_trend = px.bar(
+                        monthly_totals, x="Month", y="AmountCharged",
+                        title="Monthly Spending",
+                        labels={"AmountCharged": "Total Spent ($)"},
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    st.plotly_chart(fig_trend, use_container_width=True)
+
+                    cat_trend = trend_df.groupby(["Month", "Category"])["AmountCharged"].sum().reset_index()
+                    fig_cat_trend = px.bar(
+                        cat_trend, x="Month", y="AmountCharged", color="Category",
+                        title="Monthly Spending by Category",
+                        labels={"AmountCharged": "Total Spent ($)"},
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    st.plotly_chart(fig_cat_trend, use_container_width=True)
+
+                st.divider()
+                st.subheader("Save Your History")
+                st.caption(
+                    "Download this combined, categorized dataset. Next time you're back, upload it again "
+                    "under \"Merge with previous history\" above along with your new statement -- that's "
+                    "how this app keeps a running history without needing its own database."
+                )
+                history_csv = build_history_csv(st.session_state.debits_df, credits_df)
+                st.download_button(
+                    "⬇️ Download updated history (CSV)",
+                    data=history_csv,
+                    file_name="finapp_history.csv",
+                    mime="text/csv"
+                )
     with st.expander("Help & Instructions"):
         ai_status = "enabled" if ai_available() else "not configured (add an API key to enable it, see README)"
         st.markdown(f"""
@@ -580,6 +729,18 @@ def main():
         - **Column mapping**: when a CSV/Excel file has unrecognized headers, AI can map them for you
         - **Auto-categorize**: assigns categories to uncategorized transactions in one click, and saves the
           keywords it learns so future uploads match for free without AI
+
+        ### Building a history across months
+        This app doesn't store anything on a server between sessions. Instead, the **Trends** tab lets
+        you download a "history" CSV after each upload. Next time you come back, upload your new
+        statement as usual, then also drop that history file into **"Merge with previous history"**
+        above the uploader -- it combines both, skips duplicate transactions, and keeps your category
+        corrections intact so trends build up over time.
+
+        ### Starter categories
+        A set of common categories (Groceries, Dining Out, Transportation, Rent/Mortgage, Utilities,
+        Healthcare, Subscriptions, Entertainment, Income, Fees & Interest, Miscellaneous) comes
+        pre-loaded so you're not starting from a blank list -- add, rename, or ignore any of them.
         """)
 
 
