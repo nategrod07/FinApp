@@ -21,7 +21,8 @@ auto-categorizing expenses, and viewing spending summaries.
   Trends tab has switchable views (Total Spending / By Category) and chart types (Bar / Line /
   Area)
 - Optional AI features (via the Claude API), each opt-in so they never run without you asking:
-  - **PDF parsing** — reads unstructured statement text and extracts transactions
+  - **PDF parsing** — the PDF is sent to Claude directly (native document reading, not
+    extracted-then-truncated text), so multi-page statements are read in full
   - **Column mapping fallback** — maps unusual/unrecognized CSV/Excel headers
   - **Auto-categorize** — assigns categories to uncategorized transactions in one click; anything
     it isn't confident about pops up a one-at-a-time review screen where you pick an existing
@@ -51,15 +52,15 @@ The app is split by responsibility instead of living in one large file:
   environment variable (`get_secret()` in `secrets_utils.py`), never from source.
   `.streamlit/secrets.toml` is gitignored — only the placeholder `.example` file is committed.
 - **Rate limiting.** Every AI call goes through a shared limiter with three caps: an hourly
-  global cap (10/hour), a monthly global cap (100/30 days, so the hourly cap alone can't be
+  global cap (20/hour), a monthly global cap (100/30 days, so the hourly cap alone can't be
   hit repeatedly all month and blow past your budget), and a per-browser-session cap
-  (5/hour). Tune `AI_GLOBAL_HOURLY_LIMIT` / `AI_GLOBAL_MONTHLY_LIMIT` / `AI_SESSION_HOURLY_LIMIT`
+  (10/hour). Tune `AI_GLOBAL_HOURLY_LIMIT` / `AI_GLOBAL_MONTHLY_LIMIT` / `AI_SESSION_HOURLY_LIMIT`
   in `config.py` if you want it looser or stricter. These counters live in server memory and
   reset on app reboot/sleep-wake, so they're a second line of defense — set a hard spend
   limit in the Anthropic console (Settings → Limits) as the real backstop.
-- **Input truncation.** PDF text sent to the AI is capped (`MAX_PDF_CHARS`) and category
-  suggestions are capped (`MAX_AI_CATEGORIZE_ITEMS`), so one huge file can't blow up a
-  single request's cost.
+- **Size/volume caps.** PDFs sent to the AI are capped by file size (`MAX_PDF_BYTES`, 15MB —
+  the PDF goes in full, no text is truncated) and category suggestions are capped
+  (`MAX_AI_CATEGORIZE_ITEMS`), so one huge file can't blow up a single request's cost.
 - **Optional password gate.** Set `APP_PASSWORD` in secrets to require a password before
   the app loads at all — useful once you deploy to a public URL, since Streamlit Community
   Cloud apps on the free tier are reachable by anyone with the link. Leave it unset for

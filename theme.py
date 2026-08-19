@@ -108,6 +108,28 @@ def apply_theme_css(palette):
         background-color: {palette['surface']} !important;
         color: {palette['text']} !important;
     }}
+    body {{
+        background-color: {palette['bg']};
+    }}
+    /* Alert boxes (st.info/success/warning/error) otherwise keep Streamlit's own
+       blue/green/orange/red regardless of theme -- normalize the box itself to
+       match our cards, leave the icon's natural color as a quiet severity cue. */
+    [data-testid="stAlertContainer"] {{
+        background-color: {palette['surface']} !important;
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+    }}
+    [data-testid="stAlertContainer"] p, [data-testid="stAlertContainer"] span {{
+        color: {palette['text']} !important;
+    }}
+    /* The small hover toolbar (search/download/fullscreen) over tables and charts. */
+    [data-testid="stElementToolbar"], [data-testid="stElementToolbarButtonContainer"] {{
+        background-color: {palette['surface']} !important;
+    }}
+    /* The uploaded-file name/size row pins light-mode text regardless of theme. */
+    [data-testid="stFileUploaderFileName"], [data-testid="stFileUploaderFile"] small {{
+        color: {palette['text']} !important;
+    }}
     </style>
     """, unsafe_allow_html=True)
 

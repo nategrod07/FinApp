@@ -1,5 +1,6 @@
 """Claude API access: client setup, rate limiting, and the AI-assisted features."""
 
+import base64
 import json
 import threading
 import time
@@ -15,7 +16,7 @@ from config import (
     AI_SESSION_HOURLY_LIMIT,
     AI_SESSION_HOURLY_WINDOW_SECONDS,
     CLAUDE_MODEL,
-    MAX_PDF_CHARS,
+    MAX_PDF_BYTES,
 )
 from secrets_utils import get_secret
 
@@ -78,7 +79,13 @@ def check_and_record_ai_call():
         return True, None
 
 
-def call_claude(system_prompt, user_prompt, max_tokens=2048):
+def _call_claude_raw(system_prompt, content, max_tokens=2048):
+    """Shared call path for both plain-text prompts and document (PDF) input.
+
+    `content` is either a string or a list of content blocks (e.g. a PDF document
+    block plus an instruction block). Rate limiting lives here so every AI-calling
+    function -- text or document -- goes through the same shared budget.
+    """
     client = get_claude_client()
     if client is None:
         return None
@@ -91,12 +98,16 @@ def call_claude(system_prompt, user_prompt, max_tokens=2048):
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": content}],
         )
         return response.content[0].text
     except Exception as e:
         st.error(f"AI request failed: {str(e)}")
         return None
+
+
+def call_claude(system_prompt, user_prompt, max_tokens=2048):
+    return _call_claude_raw(system_prompt, user_prompt, max_tokens=max_tokens)
 
 
 def extract_json_from_response(text):
@@ -113,18 +124,42 @@ def extract_json_from_response(text):
         return None
 
 
-def ai_extract_transactions_from_text(raw_text):
-    """Use Claude to turn raw PDF statement text into structured transactions."""
-    truncated = raw_text[:MAX_PDF_CHARS]
+def ai_extract_transactions_from_pdf(pdf_bytes):
+    """Send the PDF straight to Claude's native document understanding.
+
+    This reads the whole file -- there's no character-count cutoff the way there
+    was extracting text via PyPDF2 first and truncating it, so multi-page
+    statements aren't silently cut off partway through. It also tends to read
+    tables/layout more accurately than flattened extracted text. The PDF still
+    only ever goes to the same Anthropic API endpoint already used for every
+    other AI feature here -- no new third party, same trust boundary as before.
+    """
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        st.error(
+            f"PDF is too large for AI extraction ({len(pdf_bytes) / 1_048_576:.1f}MB, "
+            f"limit {MAX_PDF_BYTES // 1_048_576}MB). Try splitting it or converting to CSV/Excel."
+        )
+        return None
     system_prompt = (
-        "You extract bank/credit card transactions from raw statement text and output "
+        "You extract bank/credit card transactions from a statement PDF and output "
         "ONLY a JSON array, no markdown fences, no commentary. Each element must have keys: "
         '"date" (as written in the source), "details" (merchant/description), '
         '"amount" (positive number, no currency symbols or commas), '
         '"type" (exactly "Debit" or "Credit"). Skip headers, totals, and non-transaction lines. '
-        "If you cannot find any transactions, output an empty array []."
+        "Read every page. If you cannot find any transactions, output an empty array []."
     )
-    response_text = call_claude(system_prompt, truncated, max_tokens=4096)
+    content = [
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8"),
+            },
+        },
+        {"type": "text", "text": "Extract all transactions from this statement."},
+    ]
+    response_text = _call_claude_raw(system_prompt, content, max_tokens=8192)
     if not response_text:
         return None
     data = extract_json_from_response(response_text)

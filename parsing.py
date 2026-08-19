@@ -3,7 +3,7 @@
 import pandas as pd
 import streamlit as st
 
-from ai_helpers import ai_available, ai_extract_transactions_from_text, ai_map_columns
+from ai_helpers import ai_available, ai_extract_transactions_from_pdf, ai_map_columns
 from config import COLUMN_ALIASES, REQUIRED_COLUMNS
 
 try:
@@ -104,21 +104,25 @@ def extract_text_from_pdf(file):
 
 
 def process_pdf_file(file):
-    """Process PDF files: pull text out, then let Claude structure it into transactions."""
-    if not PYPDF2_AVAILABLE:
-        st.error("PDF processing is not available. Please install PyPDF2.")
-        return None
-    text = extract_text_from_pdf(file)
-    if not text:
-        st.error("Could not extract any text from this PDF. It might be scanned or image-based.")
-        return None
+    """Process PDF files: hand the whole file to Claude's native document reading.
 
+    No text-extraction-then-truncate step -- the PDF goes to Claude directly, so
+    a long multi-page statement doesn't get silently cut off partway through.
+    PyPDF2 text extraction is still used, but only as a fallback preview when AI
+    isn't available or comes back empty.
+    """
     if ai_available():
+        file.seek(0)
+        pdf_bytes = file.read()
         with st.spinner("Using AI to read the PDF statement..."):
-            df = ai_extract_transactions_from_text(text)
+            df = ai_extract_transactions_from_pdf(pdf_bytes)
         if df is None or df.empty:
             st.warning("AI couldn't find recognizable transactions in this PDF.")
-            st.text_area("Extracted text (first 1000 characters):", text[:1000], height=200)
+            if PYPDF2_AVAILABLE:
+                file.seek(0)
+                text = extract_text_from_pdf(file)
+                if text:
+                    st.text_area("Extracted text preview (first 1000 characters):", text[:1000], height=200)
             return None
         st.success(f"AI extracted {len(df)} transactions from the PDF.")
         df = clean_amount_and_type_columns(df)
@@ -128,6 +132,13 @@ def process_pdf_file(file):
             df = df.dropna(subset=["Date"])
         return categorize_transactions(df)
     else:
+        if not PYPDF2_AVAILABLE:
+            st.error("PDF processing needs either PyPDF2 installed or an Anthropic API key configured.")
+            return None
+        text = extract_text_from_pdf(file)
+        if not text:
+            st.error("Could not extract any text from this PDF. It might be scanned or image-based.")
+            return None
         st.warning("Automatic PDF parsing needs an Anthropic API key (see README for setup).")
         st.text_area("Extracted text (first 1000 characters):", text[:1000], height=200)
         st.info("You can also convert this statement to CSV/Excel and upload that instead.")

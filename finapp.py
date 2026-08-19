@@ -239,14 +239,14 @@ def main():
                     )
                     col_table, col_chart = st.columns(2)
                     with col_table:
-                        st.dataframe(
-                            category_totals,
-                            column_config={
-                                "AmountCharged": st.column_config.NumberColumn("AmountCharged", format="%.2f USD")
-                            },
-                            use_container_width=True,
-                            hide_index=True
-                        )
+                        # st.dataframe/st.data_editor render via a canvas grid whose
+                        # colors come from Streamlit's static config.toml theme, not
+                        # CSS -- unreachable by the dark-mode toggle. st.table is a
+                        # plain HTML table, so it actually themes correctly.
+                        table_display = category_totals.copy()
+                        table_display["AmountCharged"] = table_display["AmountCharged"].apply(lambda a: f"{a:,.2f} USD")
+                        table_display.index = [""] * len(table_display)
+                        st.table(table_display)
                     with col_chart:
                         fig = px.pie(
                             category_totals,
@@ -261,7 +261,14 @@ def main():
                     st.subheader("Payment Summary")
                     total_payments = credits_df["AmountCharged"].sum()
                     st.metric("Total payments", f"{total_payments:,.2f} USD")
-                    st.dataframe(credits_df, use_container_width=True, hide_index=True)
+                    if credits_df.empty:
+                        st.info("No payments in this file.")
+                    else:
+                        payments_display = credits_df[["Date_formatted", "Details", "AmountCharged", "Category"]].copy()
+                        payments_display = payments_display.rename(columns={"Date_formatted": "Date"})
+                        payments_display["AmountCharged"] = payments_display["AmountCharged"].apply(lambda a: f"{a:,.2f} USD")
+                        payments_display.index = [""] * len(payments_display)
+                        st.table(payments_display)
             with tab3:
                 with st.container(border=True):
                     st.subheader("Spending Trends")
@@ -309,6 +316,10 @@ def main():
                                 color_discrete_sequence=palette["chart_colors"],
                                 **chart_kwargs
                             )
+                        # Without this, a single-month "Month" value (e.g. "2024-04")
+                        # reads as date-like to Plotly's axis-type auto-detection,
+                        # which then renders confusing sub-second tick labels.
+                        fig_trend.update_xaxes(type="category")
                         st.plotly_chart(themed_chart(fig_trend, palette), use_container_width=True)
 
                 with st.container(border=True):
