@@ -65,6 +65,15 @@ def clean_dates(df):
     df["Original_Date"] = df["Date"].copy()
 
     def fix_date(date_str):
+        # Try strict ISO (YYYY-MM-DD, what AI-extracted PDF dates use) first --
+        # pd.to_datetime with dayfirst=True can silently swap day/month even on
+        # an unambiguous ISO string when both components are <=12 (e.g.
+        # "2026-03-06" -> "2026-06-03"), since dayfirst only makes sense for
+        # genuinely ambiguous D/M/Y-style formats, not Y-M-D ones.
+        try:
+            return pd.to_datetime(date_str, format="%Y-%m-%d", errors="raise")
+        except (ValueError, TypeError):
+            pass
         try:
             return pd.to_datetime(date_str, errors='coerce', dayfirst=True)
         except Exception:

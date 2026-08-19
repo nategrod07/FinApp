@@ -143,10 +143,17 @@ def ai_extract_transactions_from_pdf(pdf_bytes):
     system_prompt = (
         "You extract bank/credit card transactions from a statement PDF and output "
         "ONLY a JSON array, no markdown fences, no commentary. Each element must have keys: "
-        '"date" (as written in the source), "details" (merchant/description), '
+        '"date" as a full date in YYYY-MM-DD format, "details" (merchant/description), '
         '"amount" (positive number, no currency symbols or commas), '
         '"type" (exactly "Debit" or "Credit"). Skip headers, totals, and non-transaction lines. '
-        "Read every page. If you cannot find any transactions, output an empty array []."
+        "Read every page. If you cannot find any transactions, output an empty array []. "
+        "Statements commonly print each transaction row with only a month and day (e.g. "
+        '"03/16") and state the year once elsewhere, in a statement period near the top '
+        '(e.g. "February 20, 2026 through March 18, 2026"). When a row has no year, infer '
+        "it from that statement period -- never invent a placeholder year. If the period "
+        "spans a year boundary (e.g. December into January), match each transaction's year "
+        "to whichever side of the boundary its month actually falls on, not just the "
+        "period's start year."
     )
     content = [
         {

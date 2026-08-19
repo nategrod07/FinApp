@@ -130,6 +130,23 @@ def apply_theme_css(palette):
     [data-testid="stFileUploaderFileName"], [data-testid="stFileUploaderFile"] small {{
         color: {palette['text']} !important;
     }}
+    /* st.dialog's own background is a translucent tan (~25% opacity) that just
+       blends with whatever's behind it -- give the backdrop a neutral dark
+       scrim instead (works in both themes). The card itself (role="dialog")
+       is pinned to Streamlit's native light theme by chained atomic classes
+       with higher CSS specificity than an attribute selector can beat, the
+       same issue as the select dropdown -- so instead of fighting its
+       background, pin its text to always read against that permanently-light
+       card, the same fix used there. */
+    [data-testid="stDialog"] {{
+        background-color: rgba(0, 0, 0, 0.6) !important;
+    }}
+    /* Excludes <button> and its descendants -- those already correctly follow
+       the dynamic palette on their own, and this selector's specificity would
+       otherwise win over that and flatten every dialog button back to dark text. */
+    [data-testid="stDialog"] [role="dialog"] *:not(button):not(button *) {{
+        color: {LIGHT_PALETTE['text']} !important;
+    }}
     </style>
     """, unsafe_allow_html=True)
 

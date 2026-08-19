@@ -31,6 +31,13 @@ auto-categorizing expenses, and viewing spending summaries.
 AI features are entirely optional. Without an API key configured, everything except
 automatic PDF parsing still works exactly as before.
 
+**A note on AI accuracy:** in testing against a real 4-page statement, PDF extraction correctly
+read the year for every transaction (inferred from the statement period, since the year isn't
+repeated on each row) and got 43 of 45 dollar amounts exactly right — but misread two amounts
+by a small margin on a page with unusual font rendering. This is a reading-precision limit of
+the underlying model, not something a prompt tweak fixes reliably. Spot-check AI-extracted
+amounts against the source statement, especially for large or unusual transactions.
+
 ## Project structure
 
 The app is split by responsibility instead of living in one large file:
