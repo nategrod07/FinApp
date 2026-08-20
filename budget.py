@@ -104,3 +104,36 @@ def allocate_budget(net_monthly, bills, other_spend):
         "is_over_budget": remaining < 0,
         "breakdown": breakdown,
     }
+
+
+def compare_actual_vs_budget(budgeted_by_category, actual_by_category):
+    """Compare planned spending against real transaction totals, category by category.
+
+    budgeted_by_category / actual_by_category: dicts of {category: amount}. Categories
+    that only appear on one side are treated as zero on the other, so an outer join
+    of the two dicts' keys is used -- this also surfaces spending in categories that
+    were never budgeted for at all.
+    """
+    categories = set(budgeted_by_category) | set(actual_by_category)
+    rows = []
+    for category in categories:
+        budgeted = budgeted_by_category.get(category, 0.0)
+        actual = actual_by_category.get(category, 0.0)
+        variance = budgeted - actual
+        rows.append({
+            "category": category,
+            "budgeted": budgeted,
+            "actual": actual,
+            "variance": variance,
+            "is_over": variance < 0,
+        })
+    rows.sort(key=lambda r: r["variance"])
+
+    total_budgeted = sum(budgeted_by_category.values())
+    total_actual = sum(actual_by_category.values())
+    return {
+        "rows": rows,
+        "total_budgeted": total_budgeted,
+        "total_actual": total_actual,
+        "total_variance": total_budgeted - total_actual,
+    }
