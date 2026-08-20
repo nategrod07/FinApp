@@ -27,6 +27,11 @@ auto-categorizing expenses, and viewing spending summaries.
   - **Auto-categorize** — assigns categories to uncategorized transactions in one click; anything
     it isn't confident about pops up a one-at-a-time review screen where you pick an existing
     category or create a new one, instead of being silently left uncategorized
+- **Budget Planner** tab (works independently of any uploaded statement): enter pay
+  (hourly/monthly/yearly), state, and filing status for an estimated take-home paycheck after
+  federal, state, and FICA taxes, then list bills and fill in amounts for predesignated common
+  spending categories to see a pie-chart breakdown of where take-home pay goes. This is a rough
+  budgeting estimate, not tax advice — see `budget_data.py` for the approximation caveats.
 
 AI features are entirely optional. Without an API key configured, everything except
 automatic PDF parsing still works exactly as before.
@@ -52,6 +57,8 @@ The app is split by responsibility instead of living in one large file:
 | `ai_helpers.py` | Claude client, rate limiter, and the AI-assisted parsing/categorizing calls |
 | `parsing.py` | Turning an uploaded CSV/Excel/PDF into a categorized dataframe |
 | `history.py` | Reading, merging, and exporting the multi-month history CSV |
+| `budget.py` | Take-home pay estimation and budget allocation math (no Streamlit dependency) |
+| `budget_data.py` | Tax brackets, state rates, and reference data for the Budget Planner |
 
 ## Security & cost controls
 
