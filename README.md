@@ -100,6 +100,38 @@ Run it:
 streamlit run finapp.py
 ```
 
+## Development workflow
+
+Changes go through a pull request, not straight to `main` — every PR runs CI (below)
+and needs those checks green before it merges.
+
+```bash
+git checkout -b your-branch-name
+# make changes
+pip install -r requirements-dev.txt   # adds pytest/ruff/bandit/pip-audit on top of the app deps
+ruff check .                          # lint
+pytest tests/ -v                      # tests
+git push -u origin your-branch-name
+gh pr create
+```
+
+### CI checks (`.github/workflows/ci.yml`)
+
+Runs on every PR and push to `main`:
+
+- **Lint** — `ruff`, configured in `pyproject.toml` with a deliberately curated rule set
+  (real correctness issues, import sorting, modernization — not type-hint or docstring
+  requirements this codebase doesn't use)
+- **Security** — `bandit` (static analysis for security issues, e.g. unsafe patterns),
+  `pip-audit` (dependency vulnerability scan, advisory-only since this app pins no
+  transitive versions and findings in packages pulled in by streamlit/pandas shift with
+  every install), and a grep-based check that no API key or `.streamlit/secrets.toml`
+  ever gets committed
+- **Tests** — `pytest`, covering the parsing/date/history/rate-limiter logic (`tests/`)
+- **Boot smoke test** — since this is a server-rendered Streamlit app with no separate
+  JS frontend, "does the UI build" means "does the app actually boot and respond,"
+  which this checks directly
+
 ## Deploying (Streamlit Community Cloud)
 
 > Note: if you've been running this inside a GitHub Codespace, that's a dev environment,
