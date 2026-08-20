@@ -4,7 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 from ai_helpers import ai_available, ai_categorize_details
-from budget import allocate_budget, annualize_salary, estimate_net_income
+from budget import allocate_budget, annualize_salary, compare_actual_vs_budget, estimate_net_income
 from budget_data import COMMON_EXPENSE_CATEGORIES, FILING_STATUSES, US_STATES
 from category_state import add_keyword_to_category, category_icon, init_session_state, save_categories
 from config import MAX_AI_CATEGORIZE_ITEMS
@@ -195,6 +195,72 @@ def render_budget_planner(palette):
             st.plotly_chart(themed_chart(fig, palette), use_container_width=True)
         else:
             st.info("Fill in some bills or spending above to see your allocation.")
+
+    st.divider()
+    st.subheader("Actual vs. Budgeted")
+
+    debits_df = st.session_state.get("debits_df")
+    if debits_df is None or debits_df.empty:
+        st.info(
+            "Upload a statement in the Transactions tab to compare your actual spending "
+            "against this budget."
+        )
+        return
+
+    budgeted_by_category = {}
+    for item in bills + other_spend:
+        name = item.get("name") or item.get("category")
+        amount = item["amount"]
+        if not name or amount <= 0:
+            continue
+        budgeted_by_category[name] = budgeted_by_category.get(name, 0.0) + amount
+
+    trend_df = debits_df.copy()
+    trend_df["Month"] = trend_df["Date"].dt.to_period("M").astype(str)
+    months = sorted(trend_df["Month"].unique(), reverse=True)
+    selected_month = st.selectbox("Month", options=months, key="budget_compare_month")
+
+    actual_by_category = (
+        trend_df[trend_df["Month"] == selected_month]
+        .groupby("Category")["AmountCharged"].sum().to_dict()
+    )
+
+    comparison = compare_actual_vs_budget(budgeted_by_category, actual_by_category)
+
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Budgeted", f"${comparison['total_budgeted']:,.2f}")
+        c2.metric("Actual", f"${comparison['total_actual']:,.2f}")
+        c3.metric(
+            "Over" if comparison["total_variance"] < 0 else "Under",
+            f"${abs(comparison['total_variance']):,.2f}",
+        )
+
+        if not comparison["rows"]:
+            st.info("No budgeted amounts or transactions to compare for this month.")
+        else:
+            table_rows = []
+            for row in comparison["rows"]:
+                table_rows.append({
+                    "Category": f"{category_icon(row['category'])} {row['category']}",
+                    "Budgeted": f"${row['budgeted']:,.2f}",
+                    "Actual": f"${row['actual']:,.2f}",
+                    "Variance": f"{'-' if row['is_over'] else '+'}${abs(row['variance']):,.2f}",
+                    "": "🔴 Over" if row["is_over"] else "🟢 Under",
+                })
+            comparison_display = pd.DataFrame(table_rows)
+            comparison_display.index = [""] * len(comparison_display)
+            st.table(comparison_display)
+
+            chart_df = pd.DataFrame(comparison["rows"])
+            fig_compare = px.bar(
+                chart_df, x="category", y=["budgeted", "actual"],
+                barmode="group",
+                title=f"Budgeted vs. Actual -- {selected_month}",
+                labels={"category": "Category", "value": "Amount ($)", "variable": ""},
+                color_discrete_sequence=palette["chart_colors"],
+            )
+            st.plotly_chart(themed_chart(fig_compare, palette), use_container_width=True)
 
 
 def main():

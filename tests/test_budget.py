@@ -6,6 +6,7 @@ from budget import (
     calculate_federal_tax,
     calculate_fica,
     calculate_state_tax,
+    compare_actual_vs_budget,
     estimate_net_income,
 )
 
@@ -133,3 +134,56 @@ class TestAllocateBudget:
         result = allocate_budget(net_monthly=1000, bills=[], other_spend=[{"category": "Groceries", "amount": 200}])
         categories = {b["category"] for b in result["breakdown"]}
         assert "Bills" not in categories
+
+
+class TestCompareActualVsBudget:
+    def test_matching_categories_compute_variance(self):
+        result = compare_actual_vs_budget(
+            budgeted_by_category={"Groceries": 400, "Dining Out": 100},
+            actual_by_category={"Groceries": 350, "Dining Out": 150},
+        )
+        rows_by_category = {r["category"]: r for r in result["rows"]}
+        assert rows_by_category["Groceries"]["variance"] == pytest.approx(50)
+        assert rows_by_category["Groceries"]["is_over"] is False
+        assert rows_by_category["Dining Out"]["variance"] == pytest.approx(-50)
+        assert rows_by_category["Dining Out"]["is_over"] is True
+
+    def test_totals_sum_each_side_independently(self):
+        result = compare_actual_vs_budget(
+            budgeted_by_category={"Groceries": 400, "Dining Out": 100},
+            actual_by_category={"Groceries": 350, "Dining Out": 150},
+        )
+        assert result["total_budgeted"] == pytest.approx(500)
+        assert result["total_actual"] == pytest.approx(500)
+        assert result["total_variance"] == pytest.approx(0)
+
+    def test_category_only_in_actual_is_treated_as_unbudgeted(self):
+        result = compare_actual_vs_budget(
+            budgeted_by_category={"Groceries": 400},
+            actual_by_category={"Groceries": 350, "Travel": 200},
+        )
+        rows_by_category = {r["category"]: r for r in result["rows"]}
+        assert rows_by_category["Travel"]["budgeted"] == 0.0
+        assert rows_by_category["Travel"]["is_over"] is True
+
+    def test_category_only_in_budget_shows_zero_actual(self):
+        result = compare_actual_vs_budget(
+            budgeted_by_category={"Groceries": 400, "Subscriptions": 50},
+            actual_by_category={"Groceries": 350},
+        )
+        rows_by_category = {r["category"]: r for r in result["rows"]}
+        assert rows_by_category["Subscriptions"]["actual"] == 0.0
+        assert rows_by_category["Subscriptions"]["is_over"] is False
+
+    def test_rows_sorted_most_over_budget_first(self):
+        result = compare_actual_vs_budget(
+            budgeted_by_category={"Groceries": 400, "Dining Out": 100},
+            actual_by_category={"Groceries": 350, "Dining Out": 300},
+        )
+        assert result["rows"][0]["category"] == "Dining Out"
+
+    def test_empty_inputs_yield_empty_result(self):
+        result = compare_actual_vs_budget({}, {})
+        assert result["rows"] == []
+        assert result["total_budgeted"] == 0
+        assert result["total_actual"] == 0
