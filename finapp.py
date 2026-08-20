@@ -1,6 +1,6 @@
 
-import streamlit as st
 import plotly.express as px
+import streamlit as st
 
 from ai_helpers import ai_available, ai_categorize_details
 from category_state import add_keyword_to_category, category_icon, init_session_state, save_categories

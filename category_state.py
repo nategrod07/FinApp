@@ -20,7 +20,7 @@ def init_session_state():
         st.session_state.manual_categorize_queue = []
 
     if os.path.exists(CATEGORY_FILE):
-        with open(CATEGORY_FILE, "r") as f:
+        with open(CATEGORY_FILE) as f:
             st.session_state.categories = json.load(f)
 
 

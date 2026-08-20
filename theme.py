@@ -160,6 +160,6 @@ def themed_chart(fig, palette, height=380):
         title_font_color=palette["text"],
         legend_font_color=palette["text"],
         height=height,
-        margin=dict(t=40, b=20, l=20, r=20),
+        margin={"t": 40, "b": 20, "l": 20, "r": 20},
     )
     return fig

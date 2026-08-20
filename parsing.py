@@ -7,10 +7,10 @@ from ai_helpers import ai_available, ai_extract_transactions_from_pdf, ai_map_co
 from config import COLUMN_ALIASES, REQUIRED_COLUMNS
 
 try:
-    import PyPDF2
-    PYPDF2_AVAILABLE = True
+    import pypdf
+    PYPDF_AVAILABLE = True
 except ImportError:
-    PYPDF2_AVAILABLE = False
+    PYPDF_AVAILABLE = False
 
 
 def map_columns_with_aliases(df):
@@ -99,7 +99,7 @@ def clean_dates(df):
 def extract_text_from_pdf(file):
     """Extract raw text content from a PDF file"""
     try:
-        pdf_reader = PyPDF2.PdfReader(file)
+        pdf_reader = pypdf.PdfReader(file)
         text = ""
         for page_num in range(len(pdf_reader.pages)):
             page = pdf_reader.pages[page_num]
@@ -117,7 +117,7 @@ def process_pdf_file(file):
 
     No text-extraction-then-truncate step -- the PDF goes to Claude directly, so
     a long multi-page statement doesn't get silently cut off partway through.
-    PyPDF2 text extraction is still used, but only as a fallback preview when AI
+    pypdf text extraction is still used, but only as a fallback preview when AI
     isn't available or comes back empty.
     """
     if ai_available():
@@ -127,7 +127,7 @@ def process_pdf_file(file):
             df = ai_extract_transactions_from_pdf(pdf_bytes)
         if df is None or df.empty:
             st.warning("AI couldn't find recognizable transactions in this PDF.")
-            if PYPDF2_AVAILABLE:
+            if PYPDF_AVAILABLE:
                 file.seek(0)
                 text = extract_text_from_pdf(file)
                 if text:
@@ -141,8 +141,8 @@ def process_pdf_file(file):
             df = df.dropna(subset=["Date"])
         return categorize_transactions(df)
     else:
-        if not PYPDF2_AVAILABLE:
-            st.error("PDF processing needs either PyPDF2 installed or an Anthropic API key configured.")
+        if not PYPDF_AVAILABLE:
+            st.error("PDF processing needs either pypdf installed or an Anthropic API key configured.")
             return None
         text = extract_text_from_pdf(file)
         if not text:
