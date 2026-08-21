@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -25,6 +26,8 @@ try:
     ANTHROPIC_SDK_AVAILABLE = True
 except ImportError:
     ANTHROPIC_SDK_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 @st.cache_resource
@@ -101,8 +104,9 @@ def _call_claude_raw(system_prompt, content, max_tokens=2048):
             messages=[{"role": "user", "content": content}],
         )
         return response.content[0].text
-    except Exception as e:
-        st.error(f"AI request failed: {str(e)}")
+    except Exception:
+        logger.exception("Claude API request failed")
+        st.error("AI request failed. Please try again in a moment.")
         return None
 
 
