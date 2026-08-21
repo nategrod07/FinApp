@@ -1,5 +1,7 @@
 """Turning an uploaded CSV/Excel/PDF file into a categorized transactions dataframe."""
 
+import logging
+
 import pandas as pd
 import streamlit as st
 
@@ -11,6 +13,8 @@ try:
     PYPDF_AVAILABLE = True
 except ImportError:
     PYPDF_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 def map_columns_with_aliases(df):
@@ -107,8 +111,9 @@ def extract_text_from_pdf(file):
             if page_text:
                 text += page_text
         return text
-    except Exception as e:
-        st.error(f"Failed to extract text from PDF: {str(e)}")
+    except Exception:
+        logger.exception("Failed to extract text from PDF")
+        st.error("Could not read this PDF. It may be corrupted or password-protected.")
         return None
 
 
@@ -199,6 +204,7 @@ def load_transactions(file, file_type):
             st.warning(f"{problem_count} dates couldn't be fixed and were set to NaT. These rows will be excluded from analysis.")
             df = df.dropna(subset=["Date"])
         return categorize_transactions(df)
-    except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
+    except Exception:
+        logger.exception("Error processing uploaded file")
+        st.error("Something went wrong processing this file. Check that it's a valid CSV/Excel/PDF export and try again.")
         return None

@@ -21,6 +21,14 @@ AI_GLOBAL_MONTHLY_WINDOW_SECONDS = 30 * 24 * 3600
 AI_SESSION_HOURLY_LIMIT = 10
 AI_SESSION_HOURLY_WINDOW_SECONDS = 3600
 
+# APP_PASSWORD brute-force protection: lock out further attempts for a window
+# after this many wrong guesses. Tracked globally (server-wide, not per-IP --
+# see auth.py), which is a coarse defense appropriate for a small solo/shared
+# deployment: it stops scripted guessing, at the cost of one attacker's flood
+# also locking out the legitimate owner for the window.
+PASSWORD_MAX_ATTEMPTS = 5
+PASSWORD_LOCKOUT_WINDOW_SECONDS = 15 * 60
+
 REQUIRED_COLUMNS = ["Date", "Details", "AmountCharged", "Debit/Credit"]
 
 COLUMN_ALIASES = {

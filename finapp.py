@@ -4,6 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 from ai_helpers import ai_available, ai_categorize_details
+from auth import check_password_lockout, record_failed_password_attempt, verify_password
 from budget import allocate_budget, annualize_salary, compare_actual_vs_budget, estimate_net_income
 from budget_data import COMMON_EXPENSE_CATEGORIES, FILING_STATUSES, US_STATES
 from category_state import add_keyword_to_category, category_icon, init_session_state, save_categories
@@ -30,6 +31,8 @@ def check_app_password():
     if st.session_state.get("app_authed"):
         return True
 
+    is_locked, retry_after = check_password_lockout()
+
     st.write("")
     st.write("")
     col1, col2, col3 = st.columns([1, 1.3, 1])
@@ -38,13 +41,18 @@ def check_app_password():
             st.markdown("<div style='text-align:center; font-size:3rem;'>💰</div>", unsafe_allow_html=True)
             st.markdown("<h2 style='text-align:center; margin-top:-0.5rem;'>FinApp</h2>", unsafe_allow_html=True)
             st.caption("This dashboard is password-protected. Enter the password to continue.")
-            pw = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
-            if st.button("Unlock", type="primary", use_container_width=True):
-                if pw == required:
-                    st.session_state.app_authed = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password")
+            if is_locked:
+                minutes = max(1, int(retry_after // 60) + 1)
+                st.error(f"Too many incorrect attempts. Try again in about {minutes} minute{'s' if minutes != 1 else ''}.")
+            else:
+                pw = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
+                if st.button("Unlock", type="primary", use_container_width=True):
+                    if verify_password(pw, required):
+                        st.session_state.app_authed = True
+                        st.rerun()
+                    else:
+                        record_failed_password_attempt()
+                        st.error("Incorrect password")
     return False
 
 
