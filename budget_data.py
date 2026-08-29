@@ -85,9 +85,18 @@ STATE_TAX_RATES = {
 }
 
 # Predesignated common expenditure categories for the "other spend" input --
-# deliberately a fixed list (not free-form) per the feature's own design.
+# a starting point, not a fixed list; the editor allows adding/removing rows.
 COMMON_EXPENSE_CATEGORIES = [
     "Groceries", "Dining Out", "Transportation/Gas", "Entertainment",
     "Subscriptions", "Personal Care", "Shopping", "Fitness/Health",
     "Savings/Investing", "Miscellaneous",
 ]
+
+# Bucketing of COMMON_EXPENSE_CATEGORIES used by the 50/30/20 preset. Bills
+# (rent, utilities, insurance -- entered separately in the Bills editor)
+# already cover most of "needs", so only the categories below are split by
+# the preset; Miscellaneous is deliberately left out since it's a catch-all,
+# not a natural fit for any one bucket.
+NEEDS_CATEGORIES = ["Groceries", "Transportation/Gas"]
+WANTS_CATEGORIES = ["Dining Out", "Entertainment", "Subscriptions", "Personal Care", "Shopping", "Fitness/Health"]
+SAVINGS_CATEGORIES = ["Savings/Investing"]
