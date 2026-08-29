@@ -1,7 +1,8 @@
 # FinApp — Personal Finance Dashboard
 
 A Streamlit app for uploading bank/credit card statements (CSV, Excel, or PDF),
-auto-categorizing expenses, and viewing spending summaries.
+auto-categorizing expenses, viewing spending trends, and planning a budget against
+your take-home pay.
 
 ## Features
 
@@ -17,9 +18,8 @@ auto-categorizing expenses, and viewing spending summaries.
   after each upload; next time, upload your new statement plus that history file (via the
   "Merge with previous history" control) to combine them, skip duplicate transactions, and
   keep prior category corrections intact — the growing dataset lives in a file you hold, not
-  on the server, so it works even though Streamlit Cloud's filesystem doesn't persist. The
-  Trends tab has switchable views (Total Spending / By Category) and chart types (Bar / Line /
-  Area)
+  on the server, so it survives restarts with no database involved. The Trends tab has
+  switchable views (Total Spending / By Category) and chart types (Bar / Line / Area)
 - Optional AI features (via the Claude API), each opt-in so they never run without you asking:
   - **PDF parsing** — the PDF is sent to Claude directly (native document reading, not
     extracted-then-truncated text), so multi-page statements are read in full
@@ -27,21 +27,29 @@ auto-categorizing expenses, and viewing spending summaries.
   - **Auto-categorize** — assigns categories to uncategorized transactions in one click; anything
     it isn't confident about pops up a one-at-a-time review screen where you pick an existing
     category or create a new one, instead of being silently left uncategorized
-- **Budget Planner** tab (works independently of any uploaded statement): enter pay
-  (hourly/monthly/yearly), state, and filing status for an estimated take-home paycheck after
-  federal, state, and FICA taxes, then list bills and fill in amounts for predesignated common
-  spending categories to see a pie-chart breakdown of where take-home pay goes. This is a rough
-  budgeting estimate, not tax advice — see `budget_data.py` for the approximation caveats.
+- **Budget Planner** tab (works independently of any uploaded statement):
+  - Enter pay (hourly/monthly/yearly), state, and filing status for an estimated take-home
+    paycheck after federal, state, and FICA taxes — a rough budgeting estimate, not tax advice
+    (see `budget_data.py` for the approximation caveats)
+  - List bills and fill in amounts across editable spending categories (add or remove rows
+    freely) to see a pie-chart breakdown of where take-home pay goes
+  - **50/30/20 preset** — one click fills in spending as 50% needs / 30% wants / 20% savings,
+    crediting whatever's already in Bills against the needs share
+  - **Auto-fill bills from history** — once a statement's uploaded, detects charges that repeat
+    at the same merchant and amount across months (rent, insurance, subscriptions) and pre-fills
+    the Bills table with them
+  - **Actual vs. budgeted** — compares this budget against real categorized spending for any
+    month in your uploaded history, with a variance table and chart
+  - Everything here is saved automatically and reloaded next time you open the app
 
 AI features are entirely optional. Without an API key configured, everything except
 automatic PDF parsing still works exactly as before.
 
-**A note on AI accuracy:** in testing against a real 4-page statement, PDF extraction correctly
-read the year for every transaction (inferred from the statement period, since the year isn't
-repeated on each row) and got 43 of 45 dollar amounts exactly right — but misread two amounts
-by a small margin on a page with unusual font rendering. This is a reading-precision limit of
-the underlying model, not something a prompt tweak fixes reliably. Spot-check AI-extracted
-amounts against the source statement, especially for large or unusual transactions.
+**A note on AI accuracy:** PDF extraction correctly infers the transaction year from the
+statement period even when it isn't repeated on every row, but dollar amounts are occasionally
+misread by a small margin on pages with unusual font rendering — a precision limit of the
+underlying model, not something a prompt tweak fixes reliably. Spot-check AI-extracted amounts
+against the source statement, especially for large or unusual transactions.
 
 ## Project structure
 
@@ -59,6 +67,8 @@ The app is split by responsibility instead of living in one large file:
 | `history.py` | Reading, merging, and exporting the multi-month history CSV |
 | `budget.py` | Take-home pay estimation and budget allocation math (no Streamlit dependency) |
 | `budget_data.py` | Tax brackets, state rates, and reference data for the Budget Planner |
+| `budget_state.py` | Saving/loading the Budget Planner's inputs to disk between sessions |
+| `auth.py` | Password-gate verification and brute-force lockout |
 
 ## Security & cost controls
 
@@ -76,11 +86,9 @@ The app is split by responsibility instead of living in one large file:
   the PDF goes in full, no text is truncated) and category suggestions are capped
   (`MAX_AI_CATEGORIZE_ITEMS`), so one huge file can't blow up a single request's cost.
 - **Optional password gate.** Set `APP_PASSWORD` in secrets to require a password before
-  the app loads at all — useful once you deploy to a public URL, since Streamlit Community
-  Cloud apps on the free tier are reachable by anyone with the link. Leave it unset for
-  solo/local use.
-- Set a spend limit in the [Anthropic console](https://console.anthropic.com/) (Settings →
-  Limits) as a backstop regardless of the above.
+  the app loads at all — useful if you host this somewhere reachable by other people. Leave
+  it unset for solo/local use. Failed attempts are rate-limited (`auth.py`) to block brute-force
+  guessing.
 
 ## Local setup
 
@@ -138,40 +146,3 @@ Runs on every PR and push to `main`:
 - **Boot smoke test** — since this is a server-rendered Streamlit app with no separate
   JS frontend, "does the UI build" means "does the app actually boot and respond,"
   which this checks directly
-
-## Deploying (Streamlit Community Cloud)
-
-> Note: if you've been running this inside a GitHub Codespace, that's a dev environment,
-> not a deployment — it pauses when you're not actively connected, which is why the app
-> "goes down" after you log off. Deploying to Streamlit Community Cloud runs independently
-> of your machine.
-
-1. Push this repo to GitHub (already done if you're reading this from the repo).
-2. Go to [share.streamlit.io](https://share.streamlit.io/) and sign in with GitHub.
-3. Click **New app**, pick this repo/branch, and set the main file to `finapp.py`.
-4. Before or after deploying, open the app's **Settings → Secrets** and add:
-   ```toml
-   ANTHROPIC_API_KEY = "sk-ant-..."
-   ```
-   (Skip this if you don't want AI features live — the app runs fine without it.)
-5. Deploy. The app stays up independently of your computer.
-
-Free-tier apps on Streamlit Community Cloud sleep after about 7 days with zero visitors
-(one click to wake them back up) — this is different from "shuts off when I log off,"
-which was the Codespaces behavior. There is no fully-free host with zero sleep at all for
-a managed Streamlit app; the only real way to get that is running it yourself on an
-always-on free VM (e.g. an Oracle Cloud "Always Free" instance), which trades the sleep
-issue for doing your own server administration.
-
-## Known limitation: category keywords aren't persistent on the cloud
-
-`categories.json` is read/written as a local file. That works for local development, but
-Streamlit Community Cloud's filesystem resets on every redeploy/restart, so keywords learned
-through the UI (via manual category corrections or the AI auto-categorize button) won't
-survive one — you'd start back at the committed starter categories after a restart.
-
-This is different from transaction *history*, which now persists via the download/re-upload
-history-file workflow described above (that data lives in a file on your machine, so it's
-unaffected by the server resetting). Only the learned keyword list is still server-local.
-Worth revisiting later (e.g. a small hosted database) if the repeated re-learning gets
-annoying.
