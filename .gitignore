@@ -4,6 +4,9 @@ clean_dates.py
 # Streamlit secrets (contains API keys, never commit)
 .streamlit/secrets.toml
 
+# Saved Budget Planner state (contains your actual salary/bills -- personal, never commit)
+budget_state.json
+
 # Python
 venv/
 .venv/

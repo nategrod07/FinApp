@@ -7,8 +7,11 @@ from budget import (
     calculate_fica,
     calculate_state_tax,
     compare_actual_vs_budget,
+    detect_recurring_bills,
     estimate_net_income,
+    suggest_50_30_20_allocation,
 )
+from budget_data import NEEDS_CATEGORIES, SAVINGS_CATEGORIES, WANTS_CATEGORIES
 
 
 class TestAnnualizeSalary:
@@ -187,3 +190,75 @@ class TestCompareActualVsBudget:
         assert result["rows"] == []
         assert result["total_budgeted"] == 0
         assert result["total_actual"] == 0
+
+
+class TestSuggest503020Allocation:
+    def test_needs_wants_savings_totals_match_the_rule(self):
+        allocation = suggest_50_30_20_allocation(net_monthly=4000, total_bills=0)
+        needs_total = sum(allocation[c] for c in NEEDS_CATEGORIES)
+        wants_total = sum(allocation[c] for c in WANTS_CATEGORIES)
+        savings_total = sum(allocation[c] for c in SAVINGS_CATEGORIES)
+        assert needs_total == pytest.approx(4000 * 0.5)
+        assert wants_total == pytest.approx(4000 * 0.3)
+        assert savings_total == pytest.approx(4000 * 0.2)
+
+    def test_existing_bills_are_credited_against_needs(self):
+        allocation = suggest_50_30_20_allocation(net_monthly=4000, total_bills=1500)
+        needs_total = sum(allocation[c] for c in NEEDS_CATEGORIES)
+        assert needs_total == pytest.approx(4000 * 0.5 - 1500)
+
+    def test_bills_exceeding_needs_share_does_not_go_negative(self):
+        allocation = suggest_50_30_20_allocation(net_monthly=4000, total_bills=5000)
+        needs_total = sum(allocation[c] for c in NEEDS_CATEGORIES)
+        assert needs_total == 0
+
+    def test_wants_and_savings_are_unaffected_by_bills(self):
+        low_bills = suggest_50_30_20_allocation(net_monthly=4000, total_bills=0)
+        high_bills = suggest_50_30_20_allocation(net_monthly=4000, total_bills=1000)
+        for category in WANTS_CATEGORIES + SAVINGS_CATEGORIES:
+            assert low_bills[category] == pytest.approx(high_bills[category])
+
+
+class TestDetectRecurringBills:
+    def test_finds_charge_repeating_across_months(self):
+        transactions = [
+            {"details": "Rent Payment", "amount": 1200, "month": "2024-01"},
+            {"details": "Rent Payment", "amount": 1200, "month": "2024-02"},
+            {"details": "Rent Payment", "amount": 1200, "month": "2024-03"},
+        ]
+        results = detect_recurring_bills(transactions)
+        assert results == [{"name": "Rent Payment", "amount": 1200}]
+
+    def test_ignores_one_off_purchases(self):
+        transactions = [
+            {"details": "Concert Tickets", "amount": 150, "month": "2024-01"},
+        ]
+        assert detect_recurring_bills(transactions) == []
+
+    def test_respects_min_months_threshold(self):
+        transactions = [
+            {"details": "Gym", "amount": 40, "month": "2024-01"},
+            {"details": "Gym", "amount": 40, "month": "2024-02"},
+        ]
+        assert detect_recurring_bills(transactions, min_months=3) == []
+        assert detect_recurring_bills(transactions, min_months=2) == [{"name": "Gym", "amount": 40}]
+
+    def test_same_merchant_different_amounts_only_counts_matching_amount(self):
+        transactions = [
+            {"details": "Grocery Store", "amount": 60, "month": "2024-01"},
+            {"details": "Grocery Store", "amount": 95, "month": "2024-02"},
+            {"details": "Grocery Store", "amount": 60, "month": "2024-03"},
+        ]
+        # "Grocery Store" at $60 only recurs in 2 of the 3 months; the $95
+        # visit is a one-off variance in amount, not a recurring bill.
+        assert detect_recurring_bills(transactions) == [{"name": "Grocery Store", "amount": 60}]
+
+    def test_results_sorted_by_amount_descending(self):
+        transactions = [
+            {"details": "Streaming", "amount": 15, "month": "2024-01"},
+            {"details": "Streaming", "amount": 15, "month": "2024-02"},
+            {"details": "Rent", "amount": 1200, "month": "2024-01"},
+            {"details": "Rent", "amount": 1200, "month": "2024-02"},
+        ]
+        results = detect_recurring_bills(transactions)
+        assert [r["name"] for r in results] == ["Rent", "Streaming"]

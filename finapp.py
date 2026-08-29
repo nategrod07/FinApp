@@ -5,8 +5,16 @@ import streamlit as st
 
 from ai_helpers import ai_available, ai_categorize_details
 from auth import check_password_lockout, record_failed_password_attempt, verify_password
-from budget import allocate_budget, annualize_salary, compare_actual_vs_budget, estimate_net_income
+from budget import (
+    allocate_budget,
+    annualize_salary,
+    compare_actual_vs_budget,
+    detect_recurring_bills,
+    estimate_net_income,
+    suggest_50_30_20_allocation,
+)
 from budget_data import COMMON_EXPENSE_CATEGORIES, FILING_STATUSES, US_STATES
+from budget_state import load_budget_state, save_budget_state
 from category_state import add_keyword_to_category, category_icon, init_session_state, save_categories
 from config import MAX_AI_CATEGORIZE_ITEMS
 from history import build_history_csv, merge_with_history, read_history_file
@@ -99,6 +107,8 @@ def categorize_dialog():
 
 
 def render_budget_planner(palette):
+    saved = load_budget_state()
+
     st.subheader("Estimate Your Take-Home Pay")
     st.caption(
         "A rough budgeting estimate, not tax advice -- federal brackets are 2024 figures and "
@@ -110,25 +120,45 @@ def render_budget_planner(palette):
     with st.container(border=True):
         col_pay, col_filing, col_result = st.columns(3)
         with col_pay:
-            pay_type = st.radio("Pay type", ["Yearly", "Monthly", "Hourly"], horizontal=True, key="budget_pay_type")
+            pay_types = ["Yearly", "Monthly", "Hourly"]
+            pay_type = st.radio(
+                "Pay type", pay_types, horizontal=True, key="budget_pay_type",
+                index=pay_types.index(saved["pay_type"]) if saved.get("pay_type") in pay_types else 0,
+            )
+            saved_amount = saved.get("amount")
             if pay_type == "Hourly":
-                amount = st.number_input("Hourly rate ($)", min_value=0.0, value=20.0, step=0.5, key="budget_amount")
+                amount = st.number_input(
+                    "Hourly rate ($)", min_value=0.0,
+                    value=float(saved_amount) if saved_amount is not None else 20.0,
+                    step=0.5, key="budget_amount",
+                )
                 hours_per_week = st.number_input(
-                    "Hours per week", min_value=1, max_value=80, value=40, key="budget_hours"
+                    "Hours per week", min_value=1, max_value=80,
+                    value=int(saved.get("hours_per_week") or 40), key="budget_hours",
                 )
             elif pay_type == "Monthly":
                 amount = st.number_input(
-                    "Monthly salary ($)", min_value=0.0, value=5000.0, step=100.0, key="budget_amount"
+                    "Monthly salary ($)", min_value=0.0,
+                    value=float(saved_amount) if saved_amount is not None else 5000.0,
+                    step=100.0, key="budget_amount",
                 )
                 hours_per_week = 40
             else:
                 amount = st.number_input(
-                    "Yearly salary ($)", min_value=0.0, value=60000.0, step=1000.0, key="budget_amount"
+                    "Yearly salary ($)", min_value=0.0,
+                    value=float(saved_amount) if saved_amount is not None else 60000.0,
+                    step=1000.0, key="budget_amount",
                 )
                 hours_per_week = 40
         with col_filing:
-            state = st.selectbox("State", options=US_STATES, index=US_STATES.index("Texas"), key="budget_state")
-            filing_status = st.selectbox("Filing status", options=FILING_STATUSES, key="budget_filing_status")
+            state = st.selectbox(
+                "State", options=US_STATES, key="budget_state",
+                index=US_STATES.index(saved["state"]) if saved.get("state") in US_STATES else US_STATES.index("Texas"),
+            )
+            filing_status = st.selectbox(
+                "Filing status", options=FILING_STATUSES, key="budget_filing_status",
+                index=FILING_STATUSES.index(saved["filing_status"]) if saved.get("filing_status") in FILING_STATUSES else 0,
+            )
         gross_yearly = annualize_salary(amount, pay_type, hours_per_week)
         tax_result = estimate_net_income(gross_yearly, filing_status, state)
         with col_result:
@@ -146,30 +176,67 @@ def render_budget_planner(palette):
     st.subheader("Build Your Budget")
     st.caption(f"Allocating from an estimated **${tax_result['net_monthly']:,.0f}/month** take-home.")
 
+    default_bills = [{"Bill": "Rent/Mortgage", "Amount": 0.0}, {"Bill": "", "Amount": 0.0}, {"Bill": "", "Amount": 0.0}]
+    default_other = [{"Category": c, "Amount": 0.0} for c in COMMON_EXPENSE_CATEGORIES]
+
+    # data_editor forbids reassigning its value through st.session_state directly
+    # (StreamlitValueAssignmentNotAllowedError) -- the supported way to replace its
+    # content programmatically is to change its `key` so it's treated as a brand
+    # new widget, seeded fresh from the `data` argument instead of its prior state.
+    st.session_state.setdefault("budget_bills_editor_version", 0)
+    st.session_state.setdefault("budget_other_editor_version", 0)
+    bills_seed_override = st.session_state.pop("budget_bills_seed_override", None)
+    other_seed_override = st.session_state.pop("budget_other_seed_override", None)
+    bills_editor_key = f"budget_bills_editor_{st.session_state.budget_bills_editor_version}"
+    other_editor_key = f"budget_other_editor_{st.session_state.budget_other_editor_version}"
+
     col_bills, col_other = st.columns(2)
     with col_bills:
         st.markdown("**Bills** (add or remove rows as needed)")
+        history_df = st.session_state.get("debits_df")
+        if history_df is not None and not history_df.empty:
+            if st.button("🔁 Auto-fill bills from your transaction history", use_container_width=True):
+                recurring_source = history_df.copy()
+                recurring_source["Month"] = recurring_source["Date"].dt.to_period("M").astype(str)
+                transactions = [
+                    {"details": row["Details"], "amount": row["AmountCharged"], "month": row["Month"]}
+                    for _, row in recurring_source.iterrows()
+                ]
+                recurring = detect_recurring_bills(transactions)
+                if recurring:
+                    st.session_state["budget_bills_seed_override"] = [
+                        {"Bill": r["name"], "Amount": round(r["amount"], 2)} for r in recurring
+                    ]
+                    st.session_state.budget_bills_editor_version += 1
+                    st.rerun()
+                else:
+                    st.info("No recurring charges found yet -- need the same merchant/amount in at least 2 months.")
         bills_df = st.data_editor(
-            pd.DataFrame({"Bill": ["Rent/Mortgage", "", ""], "Amount": [0.0, 0.0, 0.0]}),
+            pd.DataFrame(bills_seed_override or saved.get("bills") or default_bills),
             num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
-            key="budget_bills_editor",
+            key=bills_editor_key,
             column_config={
                 "Amount": st.column_config.NumberColumn("Amount", format="%.2f USD", min_value=0.0),
             },
         )
     with col_other:
-        st.markdown("**Other Spending**")
+        st.markdown("**Other Spending** (add or remove rows as needed)")
+        if st.button("📐 Apply 50/30/20 preset", use_container_width=True):
+            total_bills_so_far = pd.to_numeric(bills_df["Amount"], errors="coerce").fillna(0).sum()
+            suggestion = suggest_50_30_20_allocation(tax_result["net_monthly"], total_bills_so_far)
+            st.session_state["budget_other_seed_override"] = [
+                {"Category": category, "Amount": round(amount, 2)} for category, amount in suggestion.items()
+            ]
+            st.session_state.budget_other_editor_version += 1
+            st.rerun()
         other_df = st.data_editor(
-            pd.DataFrame({
-                "Category": COMMON_EXPENSE_CATEGORIES,
-                "Amount": [0.0] * len(COMMON_EXPENSE_CATEGORIES),
-            }),
-            num_rows="fixed",
+            pd.DataFrame(other_seed_override or saved.get("other_spend") or default_other),
+            num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
-            key="budget_other_editor",
+            key=other_editor_key,
             column_config={
                 "Amount": st.column_config.NumberColumn("Amount", format="%.2f USD", min_value=0.0),
             },
@@ -179,8 +246,21 @@ def render_budget_planner(palette):
         {"name": row["Bill"], "amount": row["Amount"] or 0}
         for _, row in bills_df.iterrows() if str(row["Bill"]).strip()
     ]
-    other_spend = [{"category": row["Category"], "amount": row["Amount"] or 0} for _, row in other_df.iterrows()]
+    other_spend = [
+        {"category": row["Category"], "amount": row["Amount"] or 0}
+        for _, row in other_df.iterrows() if str(row["Category"]).strip()
+    ]
     allocation = allocate_budget(tax_result["net_monthly"], bills, other_spend)
+
+    save_budget_state({
+        "pay_type": pay_type,
+        "amount": amount,
+        "hours_per_week": hours_per_week,
+        "state": state,
+        "filing_status": filing_status,
+        "bills": [{"Bill": b["name"], "Amount": b["amount"]} for b in bills],
+        "other_spend": [{"Category": o["category"], "Amount": o["amount"]} for o in other_spend],
+    })
 
     with st.container(border=True):
         m1, m2, m3 = st.columns(3)
@@ -571,9 +651,22 @@ def main():
         The **Budget Planner** tab works independently of any uploaded statement. Enter your
         pay (hourly, monthly, or yearly), state, and filing status for an estimated take-home
         pay after federal, state, and FICA taxes -- this is a rough estimate for budgeting, not
-        tax advice. Then list your bills and fill in amounts for common spending categories to
-        see how your take-home pay breaks down, visualized as a pie chart. Nothing here is saved
-        between sessions.
+        tax advice. Then list your bills and fill in amounts for spending categories (add or
+        remove rows in either table as needed) to see how your take-home pay breaks down,
+        visualized as a pie chart. Your pay info, bills, and spending are saved automatically
+        (to `budget_state.json` next to the app) so they're still there next time you open it.
+
+        Two shortcuts help you get started faster:
+        - **Apply 50/30/20 preset**: fills in "Other Spending" following the 50% needs / 30%
+          wants / 20% savings rule, crediting whatever you've already entered in Bills toward
+          the needs share.
+        - **Auto-fill bills from your transaction history**: once you've uploaded a statement
+          (or merged in history covering 2+ months), scans for charges that repeat at the same
+          merchant and amount across months -- typical of rent, insurance, or subscriptions --
+          and pre-fills the Bills table with them.
+
+        If you've uploaded a statement, the **Actual vs. Budgeted** section below the pie chart
+        compares this budget against your real categorized spending for any month in your data.
         """)
 
 

@@ -4,15 +4,20 @@ Pure calculation functions, no Streamlit dependency, so they're easy to unit tes
 and reuse. See budget_data.py for the approximation caveats on the tax figures.
 """
 
+from collections import defaultdict
+
 from budget_data import (
     ADDITIONAL_MEDICARE_RATE,
     ADDITIONAL_MEDICARE_THRESHOLD,
     FEDERAL_BRACKETS_2024,
     MEDICARE_RATE,
+    NEEDS_CATEGORIES,
+    SAVINGS_CATEGORIES,
     SOCIAL_SECURITY_RATE,
     SOCIAL_SECURITY_WAGE_BASE_2024,
     STANDARD_DEDUCTION_2024,
     STATE_TAX_RATES,
+    WANTS_CATEGORIES,
 )
 
 
@@ -137,3 +142,52 @@ def compare_actual_vs_budget(budgeted_by_category, actual_by_category):
         "total_actual": total_actual,
         "total_variance": total_budgeted - total_actual,
     }
+
+
+def suggest_50_30_20_allocation(net_monthly, total_bills):
+    """Suggest an "Other Spending" split following the 50/30/20 rule (50% needs,
+    30% wants, 20% savings). Bills already cover most of "needs" (rent,
+    utilities, insurance), so total_bills is credited against the needs share
+    first -- otherwise the preset would double-count them. Each bucket is
+    split evenly across its categories; returns {category: amount} for every
+    category in NEEDS/WANTS/SAVINGS_CATEGORIES.
+    """
+    needs_remaining = max(0.0, net_monthly * 0.5 - total_bills)
+    wants_total = net_monthly * 0.3
+    savings_total = net_monthly * 0.2
+
+    allocation = {}
+    for category in NEEDS_CATEGORIES:
+        allocation[category] = needs_remaining / len(NEEDS_CATEGORIES)
+    for category in WANTS_CATEGORIES:
+        allocation[category] = wants_total / len(WANTS_CATEGORIES)
+    for category in SAVINGS_CATEGORIES:
+        allocation[category] = savings_total / len(SAVINGS_CATEGORIES)
+    return allocation
+
+
+def detect_recurring_bills(transactions, min_months=2):
+    """Find likely recurring bills (rent, subscriptions, insurance) in a
+    transaction history.
+
+    transactions: list of {"details": str, "amount": float, "month": str}.
+    Groups by (details, amount rounded to the nearest dollar) -- a bill that
+    charges the same merchant the same amount across at least `min_months`
+    distinct months is a strong recurrence signal, unlike one-off purchases
+    that happen to share a merchant. Returns [{"name", "amount"}] sorted by
+    amount descending, so the biggest recurring bills surface first.
+    """
+    groups = defaultdict(set)
+    amounts = {}
+    for t in transactions:
+        key = (t["details"], round(t["amount"]))
+        groups[key].add(t["month"])
+        amounts[key] = t["amount"]
+
+    results = [
+        {"name": details, "amount": amounts[(details, rounded_amount)]}
+        for (details, rounded_amount), months in groups.items()
+        if len(months) >= min_months
+    ]
+    results.sort(key=lambda r: r["amount"], reverse=True)
+    return results
